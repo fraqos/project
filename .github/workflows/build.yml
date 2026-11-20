@@ -35,10 +35,10 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "Proyek ditemukan di: $PROJECT_DIR"
 
-      - name: Generate Gradle Wrapper (Fix missing JAR)
+      - name: Generate Gradle Wrapper (Upgrade to Gradle 8.7)
         run: |
           cd ${{ env.PROJECT_DIR }}
-          gradle wrapper --gradle-version 8.5
+          gradle wrapper --gradle-version 8.7
 
       - name: Beri izin eksekusi Gradle
         run: chmod +x ${{ env.PROJECT_DIR }}/gradlew
