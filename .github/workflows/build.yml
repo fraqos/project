@@ -24,7 +24,6 @@ jobs:
           mkdir -p extracted_project
           unzip -q *.zip -d extracted_project
           
-          # Mengambil hanya satu folder root utama yang valid (mengabaikan folder app)
           PROJECT_DIR=$(find extracted_project -name "build.gradle.kts" -not -path "*/app/*" -exec dirname {} \; | head -n 1)
           
           if [ -z "$PROJECT_DIR" ]; then
@@ -34,6 +33,15 @@ jobs:
           
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "Proyek ditemukan di: $PROJECT_DIR"
+
+      - name: Fix WebView Settings Syntax di MainActivity.kt
+        run: |
+          MAIN_KT=$(find ${{ env.PROJECT_DIR }} -name "MainActivity.kt" | head -n 1)
+          # Memastikan javaScriptEnabled dan domStorageEnabled dipanggil lewat .settings
+          sed -i 's/\([^.]\)\.javaScriptEnabled/\1.settings.javaScriptEnabled/g' "$MAIN_KT"
+          sed -i 's/\([^.]\)\.domStorageEnabled/\1.settings.domStorageEnabled/g' "$MAIN_KT"
+          # Mencegah duplikasi jika sudah ada .settings.settings
+          sed -i 's/\.settings\.settings\./.settings./g' "$MAIN_KT"
 
       - name: Generate Gradle Wrapper (Upgrade to Gradle 8.7)
         run: |
