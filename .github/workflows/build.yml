@@ -1,197 +1,161 @@
-name: DHYRA BROWSER - AUTO BUILD APK
+
+name: DHYRA BROWSER Android Build
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dhyra-build-${{ github.ref }}
+  group: dhyra-browser-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Dhyra Browser v1.8.0
+    name: Build Dhyra Browser v1.9.0
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - name: Setup Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
-      - name: Install Android SDK Packages
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Install Android SDK 35
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "Accepting Android SDK licenses..."
-          yes | sdkmanager --licenses || true
-
-          echo "Installing Android SDK packages..."
           sdkmanager --install \
-            "platform-tools" \
             "platforms;android-35" \
-            "build-tools;35.0.0"
+            "build-tools;35.0.0" \
+            "platform-tools"
 
-      - name: Detect Source ZIP
-        id: source
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mapfile -t ZIPS < <(find . -maxdepth 1 -type f -iname "*.zip")
-
-          if [ "${#ZIPS[@]}" -eq 0 ]; then
-            echo "::error::Tidak ada ZIP project di root repository."
-            exit 1
-          fi
-
-          if [ "${#ZIPS[@]}" -gt 1 ]; then
-            echo "::error::Ditemukan lebih dari satu ZIP. Sisakan satu ZIP source."
-            printf '%s\n' "${ZIPS[@]}"
-            exit 1
-          fi
-
-          echo "zip=${ZIPS[0]}" >> "$GITHUB_OUTPUT"
-          echo "Source ZIP: ${ZIPS[0]}"
-
-      - name: Extract Android Project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE_DIR="$RUNNER_TEMP/dhyra-source"
-          mkdir -p "$SOURCE_DIR"
-
-          unzip -oq "${{ steps.source.outputs.zip }}" -d "$SOURCE_DIR"
-
-          PROJECT_DIR=$(
-            find "$SOURCE_DIR" \
-              -type f \
-              -name "settings.gradle.kts" \
-              -printf '%h\n' |
-            head -n 1
-          )
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::settings.gradle.kts tidak ditemukan dalam ZIP."
-            exit 1
-          fi
-
-          echo "Project directory: $PROJECT_DIR"
-          cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
-
-      - name: Add Missing LazyRow Import
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACTIVITY="app/src/main/java/com/dhyra/browser/MainActivity.kt"
-
-          if [ ! -f "$ACTIVITY" ]; then
-            echo "::error::MainActivity.kt tidak ditemukan: $ACTIVITY"
-            exit 1
-          fi
-
-          if grep -qE '\bLazyRow\b' "$ACTIVITY" &&
-             ! grep -q '^import androidx\.compose\.foundation\.lazy\.LazyRow$' "$ACTIVITY"; then
-            sed -i \
-              '/^package .*$/a import androidx.compose.foundation.lazy.LazyRow' \
-              "$ACTIVITY"
-            echo "LazyRow import added."
-          else
-            echo "LazyRow import already present or LazyRow is not used."
-          fi
-
-      - name: Validate Project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          REQUIRED_FILES=(
-            "settings.gradle.kts"
-            "build.gradle.kts"
-            "app/build.gradle.kts"
-            "app/src/main/AndroidManifest.xml"
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            if [ ! -f "$FILE" ]; then
-              echo "::error::File tidak ditemukan: $FILE"
-              exit 1
-            fi
-          done
-
-      - name: Setup Gradle
+      - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Display Build Environment
-        shell: bash
-        run: |
-          java -version
-          gradle --version
-          sdkmanager --list_installed
-
-      - name: Build Debug APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP"
-
-          gradle --no-daemon \
-            --console=plain \
-            --stacktrace \
-            --info \
-            :app:assembleDebug \
-            2>&1 | tee "$RUNNER_TEMP/dhyra-build.log"
-
-      - name: Verify APK
+      - name: Prepare project
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          preferred_zip="$(find . -maxdepth 1 -type f \
+            -iname 'DHYRA_BROWSER_v1.9.0*.zip' -print -quit)"
 
-          if [ ! -s "$APK" ]; then
-            echo "::error::APK tidak ditemukan atau kosong."
-            exit 1
+          if [ -n "$preferred_zip" ]; then
+            source_zip="$preferred_zip"
+          elif [ -f settings.gradle.kts ]; then
+            echo "Project found in repository root."
+            source_zip=""
+          else
+            mapfile -t archives < <(
+              find . -maxdepth 1 -type f -iname '*.zip' -print
+            )
+
+            if [ "${#archives[@]}" -ne 1 ]; then
+              echo "::error::Expected one source ZIP."
+              exit 1
+            fi
+
+            source_zip="${archives[0]}"
           fi
 
-          echo "APK berhasil dibuat."
-          ls -lh "$APK"
+          if [ -n "$source_zip" ]; then
+            mkdir -p "$RUNNER_TEMP/dhyra-source"
+            unzip -oq "$source_zip" -d "$RUNNER_TEMP/dhyra-source"
 
-      - name: Upload APK
+            project_dir="$(
+              find "$RUNNER_TEMP/dhyra-source" \
+                -type f -name settings.gradle.kts \
+                -printf '%h\n' | head -n 1
+            )"
+
+            if [ -z "$project_dir" ]; then
+              echo "::error::Android project not found."
+              exit 1
+            fi
+
+            cp -a "$project_dir"/. "$GITHUB_WORKSPACE"/
+          fi
+
+      - name: Validate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f gradle.properties
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/dhyra/browser/MainActivity.kt
+          test -f app/src/main/java/com/dhyra/browser/BrowserController.kt
+          test -f app/src/main/java/com/dhyra/browser/NoteStore.kt
+          test -f app/src/main/java/com/dhyra/browser/BrowserEngineProvider.kt
+          test -f app/src/main/java/com/dhyra/browser/BrowserAdaptivePolicy.kt
+          test -f app/src/test/java/com/dhyra/browser/BrowserAdaptivePolicyTest.kt
+
+          grep -q 'versionName = "1.9.0"' app/build.gradle.kts
+          grep -q 'versionCode = 13' app/build.gradle.kts
+
+      - name: Restore or generate Gradle wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 8.7 --distribution-type bin
+          fi
+
+          chmod +x ./gradlew
+          test -s gradle/wrapper/gradle-wrapper.jar
+
+      - name: Run tests, lint and build APK
+        run: |
+          ./gradlew --no-daemon --stacktrace \
+            testDebugUnitTest \
+            lintDebug \
+            :app:assembleDebug
+
+      - name: Verify APK
+        run: test -s app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v1.8.0-APK
+          name: DHYRA-BROWSER-v1.9.0-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload Error Reports
+      - name: Upload diagnostic reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v1.8.0-ERROR-REPORTS
+          name: DHYRA-BROWSER-v1.9.0-diagnostics
           path: |
-            ${{ runner.temp }}/dhyra-build.log
             app/build/reports/
             app/build/outputs/logs/
+            **/build/tmp/kotlin-classes/debug/
           if-no-files-found: ignore
           retention-days: 14
+          
