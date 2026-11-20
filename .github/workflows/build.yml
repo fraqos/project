@@ -34,11 +34,12 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "Proyek ditemukan di: $PROJECT_DIR"
 
-      - name: Perbaiki Null Safety WebView di MainActivity.kt
+      - name: Perbaiki Total WebView Settings di MainActivity.kt
         run: |
           MAIN_KT=$(find ${{ env.PROJECT_DIR }} -name "MainActivity.kt" | head -n 1)
-          # Mengubah webView.settings menjadi webView?.settings agar aman dari null
-          sed -i 's/webView\.settings/webView?.settings/g' "$MAIN_KT"
+          # Mengganti baris javaScriptEnabled dan domStorageEnabled agar menggunakan safe call dan .settings yang valid
+          sed -i 's/.*javaScriptEnabled.*/            webView?.settings?.javaScriptEnabled = true/g' "$MAIN_KT"
+          sed -i 's/.*domStorageEnabled.*/            webView?.settings?.domStorageEnabled = true/g' "$MAIN_KT"
 
       - name: Generate Gradle Wrapper (Gradle 8.7)
         run: |
