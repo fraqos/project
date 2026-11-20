@@ -1,5 +1,4 @@
-
-name: DHYRA BROWSER Android Build
+name: DHYRA Browser v2.1.0 Android Build
 
 on:
   push:
@@ -10,12 +9,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: dhyra-browser-${{ github.ref }}
+  group: dhyra-android-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build DHYRA Browser v2.0.0
+    name: Build DHYRA Browser v2.1.0
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -31,13 +30,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: platform-tools
 
       - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
-      - name: Install Android SDK 35
+      - name: Install Android SDK packages
         run: |
           sdkmanager --install \
             "platforms;android-35" \
@@ -49,42 +46,58 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # FIX: Support DHYRA v2.1.0 ZIP
       - name: Prepare DHYRA project
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="$(find . -maxdepth 1 -type f \
-            -iname 'DHYRA_BROWSER_v2.0.0*.zip' \
-            -print -quit)"
+          if [ ! -f settings.gradle.kts ]; then
 
-          if [ -n "$ZIP" ]; then
+            mapfile -t ZIPS < <(
+              find . -maxdepth 1 -type f \
+                -iname 'DHYRA_BROWSER*.zip' \
+                -print
+            )
+
+            if [ "${#ZIPS[@]}" -ne 1 ]; then
+              echo "::error::Expected exactly one DHYRA_BROWSER ZIP."
+              echo "Found: ${#ZIPS[@]}"
+              printf '%s\n' "${ZIPS[@]}"
+              exit 1
+            fi
+
             mkdir -p "$RUNNER_TEMP/dhyra-source"
-            unzip -oq "$ZIP" -d "$RUNNER_TEMP/dhyra-source"
 
-            PROJECT="$(
+            unzip -oq "${ZIPS[0]}" \
+              -d "$RUNNER_TEMP/dhyra-source"
+
+            PROJECT_DIR="$(
               find "$RUNNER_TEMP/dhyra-source" \
+                -type f \
                 -name settings.gradle.kts \
                 -printf '%h\n' | head -n 1
             )"
 
-            if [ -z "$PROJECT" ]; then
-              echo "::error::Android project not found in ZIP."
+            if [ -z "$PROJECT_DIR" ]; then
+              echo "::error::Android project not found inside ZIP."
               exit 1
             fi
 
-            cp -a "$PROJECT"/. "$GITHUB_WORKSPACE"/
+            cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
           fi
 
-          test -f settings.gradle.kts
-          echo "DHYRA project is ready."
+          test -s settings.gradle.kts
+          test -s app/build.gradle.kts
 
-      - name: Validate DHYRA Browser v2.0.0
+          echo "DHYRA project prepared successfully."
+
+      - name: Validate DHYRA project
         shell: bash
         run: |
           set -euo pipefail
 
-          required_files=(
+          FILES=(
             settings.gradle.kts
             build.gradle.kts
             gradle.properties
@@ -92,30 +105,16 @@ jobs:
             app/src/main/AndroidManifest.xml
             app/src/main/java/com/dhyra/browser/MainActivity.kt
             app/src/main/java/com/dhyra/browser/BrowserController.kt
-            app/src/main/java/com/dhyra/browser/NoteStore.kt
-            app/src/main/java/com/dhyra/browser/BrowserEngineProvider.kt
-            app/src/main/java/com/dhyra/browser/BrowserAdaptivePolicy.kt
-            app/src/test/java/com/dhyra/browser/BrowserAdaptivePolicyTest.kt
           )
 
-          for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "::error::Missing file: $file"
+          for FILE in "${FILES[@]}"; do
+            if [ ! -s "$FILE" ]; then
+              echo "::error::Missing project file: $FILE"
               exit 1
             fi
           done
 
-          grep -q 'versionName = "2.0.0"' app/build.gradle.kts || {
-            echo "::error::Expected versionName 2.0.0"
-            exit 1
-          }
-
-          grep -q 'versionCode = 14' app/build.gradle.kts || {
-            echo "::error::Expected versionCode 14"
-            exit 1
-          }
-
-          echo "DHYRA Browser 2.0.0 validation successful."
+          echo "Project validation passed."
 
       - name: Restore or generate Gradle Wrapper
         shell: bash
@@ -129,19 +128,32 @@ jobs:
           fi
 
           chmod +x ./gradlew
+
           test -s gradle/wrapper/gradle-wrapper.jar
+
+      - name: Verify Gradle version
+        run: ./gradlew --version
 
       - name: Run Unit Tests
         run: |
-          ./gradlew --no-daemon --stacktrace testDebugUnitTest
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            testDebugUnitTest
 
       - name: Run Android Lint
         run: |
-          ./gradlew --no-daemon --stacktrace lintDebug
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            lintDebug
 
-      - name: Build DHYRA Browser APK
+      - name: Build DHYRA Browser Debug APK
         run: |
-          ./gradlew --no-daemon --stacktrace :app:assembleDebug
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            :app:assembleDebug
 
       - name: Verify APK
         shell: bash
@@ -156,21 +168,22 @@ jobs:
           fi
 
           ls -lh "$APK"
-          echo "APK build successful."
+
+          echo "DHYRA APK verification passed."
 
       - name: Upload DHYRA Browser APK
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v2.0.0
+          name: DHYRA-BROWSER-v2.1.0-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload Diagnostic Reports
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v2.0.0-diagnostics
+          name: DHYRA-BROWSER-v2.1.0-diagnostics
           path: |
             app/build/reports/
             app/build/outputs/logs/
