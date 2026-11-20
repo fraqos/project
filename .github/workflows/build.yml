@@ -1,59 +1,98 @@
-name: Build Android APK from ZIP
+name: DHYRA BROWSER - Build Android APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dhyra-android-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build Dhyra Browser v1.4.0
     runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '17'
-          distribution: 'temurin'
 
-      - name: Ekstrak Arsip ZIP & Cari Root Proyek
+      - name: Find and extract source ZIP
+        shell: bash
         run: |
-          mkdir -p extracted_project
-          unzip -q *.zip -d extracted_project
-          
-          PROJECT_DIR=$(find extracted_project -name "build.gradle.kts" -not -path "*/app/*" -exec dirname {} \; | head -n 1)
-          
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "Error: Proyek tidak ditemukan di dalam ZIP!"
+          set -e
+
+          ZIP_FILE="DHYRA_BROWSER_Air_Edition_v1.4.0.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "Source ZIP tidak ditemukan: $ZIP_FILE"
             exit 1
           fi
-          
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-          echo "Proyek ditemukan di: $PROJECT_DIR"
 
-      - name: Perbaiki Total WebView Settings di MainActivity.kt
+          mkdir -p "$RUNNER_TEMP/dhyra-source"
+          unzip -oq "$ZIP_FILE" -d "$RUNNER_TEMP/dhyra-source"
+
+          PROJECT_DIR=$(find "$RUNNER_TEMP/dhyra-source" \
+            -name settings.gradle.kts \
+            -printf '%h\n' | head -n 1)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Project Android tidak ditemukan di dalam ZIP."
+            exit 1
+          fi
+
+          cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
         run: |
-          MAIN_KT=$(find ${{ env.PROJECT_DIR }} -name "MainActivity.kt" | head -n 1)
-          # Mengganti baris javaScriptEnabled dan domStorageEnabled agar menggunakan safe call dan .settings yang valid
-          sed -i 's/.*javaScriptEnabled.*/            webView?.settings?.javaScriptEnabled = true/g' "$MAIN_KT"
-          sed -i 's/.*domStorageEnabled.*/            webView?.settings?.domStorageEnabled = true/g' "$MAIN_KT"
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Generate Gradle Wrapper (Gradle 8.7)
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Validate project
         run: |
-          cd ${{ env.PROJECT_DIR }}
-          gradle wrapper --gradle-version 8.7
-
-      - name: Beri izin eksekusi Gradle
-        run: chmod +x ${{ env.PROJECT_DIR }}/gradlew
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
 
       - name: Build Debug APK
-        run: cd ${{ env.PROJECT_DIR }} && ./gradlew assembleDebug
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Upload File APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: dhyra-browser-debug
-          path: "**/build/outputs/apk/debug/*.apk"
+          name: DHYRA-BROWSER-v1.4.0-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DHYRA-BROWSER-build-reports
+          path: |
+            app/build/reports/
+            app/build/outputs/logs/
+          if-no-files-found: ignore
+          retention-days: 7
