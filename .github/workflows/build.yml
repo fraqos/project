@@ -34,16 +34,14 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "Proyek ditemukan di: $PROJECT_DIR"
 
-      - name: Fix WebView Settings Syntax di MainActivity.kt
+      - name: Perbaiki Otomatis WebView Settings di MainActivity.kt
         run: |
           MAIN_KT=$(find ${{ env.PROJECT_DIR }} -name "MainActivity.kt" | head -n 1)
-          # Memastikan javaScriptEnabled dan domStorageEnabled dipanggil lewat .settings
-          sed -i 's/\([^.]\)\.javaScriptEnabled/\1.settings.javaScriptEnabled/g' "$MAIN_KT"
-          sed -i 's/\([^.]\)\.domStorageEnabled/\1.settings.domStorageEnabled/g' "$MAIN_KT"
-          # Mencegah duplikasi jika sudah ada .settings.settings
-          sed -i 's/\.settings\.settings\./.settings./g' "$MAIN_KT"
+          # Mengganti baris yang error dengan format pengaturan WebView standar yang benar
+          sed -i 's/.*javaScriptEnabled.*/            webView.settings.javaScriptEnabled = true/g' "$MAIN_KT"
+          sed -i 's/.*domStorageEnabled.*/            webView.settings.domStorageEnabled = true/g' "$MAIN_KT"
 
-      - name: Generate Gradle Wrapper (Upgrade to Gradle 8.7)
+      - name: Generate Gradle Wrapper (Gradle 8.7)
         run: |
           cd ${{ env.PROJECT_DIR }}
           gradle wrapper --gradle-version 8.7
