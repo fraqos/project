@@ -36,22 +36,32 @@ jobs:
       # 3. Setup Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
 
-      # 4. Install Android SDK packages
+      # 4. Install Android SDK Packages
       - name: Install Android SDK Packages
         shell: bash
         run: |
           set -e
 
+          echo "Accepting Android SDK licenses..."
+
+          # Disable pipefail temporarily.
+          # This prevents the 'yes' SIGPIPE from failing the step.
+          # The exit status of sdkmanager is still checked.
+          set +o pipefail
           yes | sdkmanager --licenses
+          set -o pipefail
+
+          echo "Installing Android SDK packages..."
 
           sdkmanager --install \
+            "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # 5. Detect source ZIP
+          echo "Android SDK installation completed."
+
+      # 5. Detect Source ZIP
       - name: Detect Source ZIP
         id: source
         shell: bash
@@ -59,60 +69,72 @@ jobs:
           set -euo pipefail
 
           mapfile -t ZIPS < <(
-            find . -maxdepth 1 -type f -iname "*.zip" \
-              ! -name "repository-package.zip"
+            find . -maxdepth 1 -type f -iname "*.zip"
           )
 
           if [ "${#ZIPS[@]}" -eq 0 ]; then
-            echo "::error::Tidak ada file ZIP di root repository."
+            echo "::error::Tidak ada ZIP project di root repository."
             exit 1
           fi
 
           if [ "${#ZIPS[@]}" -gt 1 ]; then
-            echo "::error::Terlalu banyak ZIP. Sisakan satu ZIP source project."
+            echo "::error::Ditemukan lebih dari satu ZIP. Sisakan satu ZIP source."
             printf '%s\n' "${ZIPS[@]}"
             exit 1
           fi
 
           echo "zip=${ZIPS[0]}" >> "$GITHUB_OUTPUT"
-          echo "ZIP ditemukan: ${ZIPS[0]}"
 
-      # 6. Extract Android project
+          echo "Source ZIP: ${ZIPS[0]}"
+
+      # 6. Extract Android Project
       - name: Extract Android Project
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$RUNNER_TEMP/dhyra-source"
+          SOURCE_DIR="$RUNNER_TEMP/dhyra-source"
+
+          mkdir -p "$SOURCE_DIR"
 
           unzip -oq "${{ steps.source.outputs.zip }}" \
-            -d "$RUNNER_TEMP/dhyra-source"
+            -d "$SOURCE_DIR"
 
-          PROJECT_DIR=$(find "$RUNNER_TEMP/dhyra-source" \
-            -type f -name settings.gradle.kts \
+          PROJECT_DIR=$(find "$SOURCE_DIR" \
+            -type f \
+            -name "settings.gradle.kts" \
             -printf '%h\n' | head -n 1)
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::Project Android tidak ditemukan dalam ZIP."
+            echo "::error::settings.gradle.kts tidak ditemukan dalam ZIP."
             exit 1
           fi
 
-          echo "Project ditemukan: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
 
           cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
 
-      # 7. Validate project
+      # 7. Validate Project Structure
       - name: Validate Project
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f settings.gradle.kts
-          test -f build.gradle.kts
-          test -f app/build.gradle.kts
-          test -f app/src/main/AndroidManifest.xml
+          REQUIRED_FILES=(
+            "settings.gradle.kts"
+            "build.gradle.kts"
+            "app/build.gradle.kts"
+            "app/src/main/AndroidManifest.xml"
+          )
 
-          echo "Semua file utama project ditemukan."
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$FILE" ]; then
+              echo "::error::File tidak ditemukan: $FILE"
+              exit 1
+            fi
+          done
+
+          echo "Project structure validation passed."
 
       # 8. Setup Gradle
       - name: Setup Gradle
@@ -120,11 +142,21 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      # 9. Build Debug APK with detailed diagnostics
+      # 9. Display Build Environment
+      - name: Display Build Environment
+        shell: bash
+        run: |
+          java -version
+          gradle --version
+          sdkmanager --list_installed
+
+      # 10. Build Debug APK
       - name: Build Debug APK
         shell: bash
         run: |
           set -o pipefail
+
+          mkdir -p "$RUNNER_TEMP"
 
           gradle --no-daemon \
             --console=plain \
@@ -133,7 +165,7 @@ jobs:
             :app:assembleDebug \
             2>&1 | tee "$RUNNER_TEMP/dhyra-build.log"
 
-      # 10. Verify APK
+      # 11. Verify APK
       - name: Verify APK
         shell: bash
         run: |
@@ -142,14 +174,14 @@ jobs:
           APK="app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "::error::APK tidak berhasil dibuat."
+            echo "::error::APK tidak ditemukan atau kosong."
             exit 1
           fi
 
-          echo "APK berhasil dibuat:"
+          echo "APK successfully generated."
           ls -lh "$APK"
 
-      # 11. Upload APK
+      # 12. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -158,7 +190,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # 12. Upload build diagnostics if failed
+      # 13. Upload Build Reports if Failed
       - name: Upload Error Reports
         if: failure()
         uses: actions/upload-artifact@v4
