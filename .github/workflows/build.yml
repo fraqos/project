@@ -24,15 +24,21 @@ jobs:
           mkdir -p extracted_project
           unzip -q *.zip -d extracted_project
           
-          # Mencari otomatis folder root proyek yang berisi 'gradlew'
-          PROJECT_DIR=$(find extracted_project -name "gradlew" -exec dirname {} \;)
+          # Mencari otomatis folder root proyek yang berisi 'gradlew' atau struktur build
+          PROJECT_DIR=$(find extracted_project -name "build.gradle.kts" -exec dirname {} \;)
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           
           if [ -z "$PROJECT_DIR" ]; then
-            echo "Error: gradlew tidak ditemukan di dalam ZIP!"
+            echo "Error: Proyek tidak ditemukan di dalam ZIP!"
             exit 1
           fi
           echo "Proyek ditemukan di: $PROJECT_DIR"
+
+      - name: Generate Gradle Wrapper (Fix missing JAR)
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          # Buat ulang wrapper agar gradle-wrapper.jar otomatis ter-generate
+          gradle wrapper --gradle-version 8.5
 
       - name: Beri izin eksekusi Gradle
         run: chmod +x ${{ env.PROJECT_DIR }}/gradlew
@@ -45,4 +51,3 @@ jobs:
         with:
           name: dhyra-browser-debug
           path: "**/build/outputs/apk/debug/*.apk"
-          
