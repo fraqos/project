@@ -1,0 +1,43 @@
+name: Build Android APK from ZIP
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Ekstrak Arsip ZIP Otomatis
+        run: |
+          mkdir -p extracted_project
+          unzip -q *.zip -d extracted_project
+          cd extracted_project
+          if [ -d "DHYRA-BROWSER-GitHub-Ready" ]; then
+            cp -r DHYRA-BROWSER-GitHub-Ready/* .
+          elif [ -d "dhyra-browser-main" ]; then
+            cp -r dhyra-browser-main/* .
+          fi
+
+      - name: Beri izin eksekusi Gradle
+        run: chmod +x extracted_project/gradlew
+
+      - name: Build Debug APK
+        run: cd extracted_project && ./gradlew assembleDebug
+
+      - name: Upload File APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dhyra-browser-debug
+          path: "**/build/outputs/apk/debug/*.apk"
