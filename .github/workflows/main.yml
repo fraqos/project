@@ -19,22 +19,26 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Ekstrak Arsip ZIP Otomatis
+      - name: Ekstrak Arsip ZIP & Cari Root Proyek
         run: |
           mkdir -p extracted_project
           unzip -q *.zip -d extracted_project
-          cd extracted_project
-          if [ -d "DHYRA-BROWSER-GitHub-Ready" ]; then
-            cp -r DHYRA-BROWSER-GitHub-Ready/* .
-          elif [ -d "dhyra-browser-main" ]; then
-            cp -r dhyra-browser-main/* .
+          
+          # Mencari otomatis folder yang berisi 'gradlew' di dalam hasil ekstrak
+          PROJECT_DIR=$(find extracted_project -name "gradlew" -exec dirname {} \;)
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Error: gradlew tidak ditemukan di dalam ZIP!"
+            exit 1
           fi
+          echo "Proyek ditemukan di: $PROJECT_DIR"
 
       - name: Beri izin eksekusi Gradle
-        run: chmod +x extracted_project/gradlew
+        run: chmod +x ${{ env.PROJECT_DIR }}/gradlew
 
       - name: Build Debug APK
-        run: cd extracted_project && ./gradlew assembleDebug
+        run: cd ${{ env.PROJECT_DIR }} && ./gradlew assembleDebug
 
       - name: Upload File APK
         uses: actions/upload-artifact@v4
