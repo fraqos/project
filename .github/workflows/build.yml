@@ -3,9 +3,7 @@ name: DHYRA BROWSER Android Build
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -17,115 +15,71 @@ concurrency:
 
 jobs:
   build:
-    name: Build Dhyra Browser v1.9.0
+    name: Build DHYRA Browser v2.0.0
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Setup Java 17
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. Setup Android SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
-      # 4. Accept Android licenses
       - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-      # 5. Install Android SDK 35
       - name: Install Android SDK 35
-        shell: bash
         run: |
-          set -euo pipefail
-
           sdkmanager --install \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "platform-tools"
 
-      # 6. Setup Gradle
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      # 7. Extract project ZIP
-      - name: Prepare project
+      - name: Prepare DHYRA project
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching DHYRA Browser source ZIP..."
+          ZIP="$(find . -maxdepth 1 -type f \
+            -iname 'DHYRA_BROWSER_v2.0.0*.zip' \
+            -print -quit)"
 
-          preferred_zip="$(
-            find . -maxdepth 1 -type f \
-              -iname 'DHYRA_BROWSER_v1.9.0*.zip' \
-              -print -quit
-          )"
-
-          if [ -n "$preferred_zip" ]; then
-            source_zip="$preferred_zip"
-
-          elif [ -f settings.gradle.kts ]; then
-            echo "Project already exists in repository root."
-            source_zip=""
-
-          else
-            mapfile -t archives < <(
-              find . -maxdepth 1 -type f \
-                -iname '*.zip' -print
-            )
-
-            if [ "${#archives[@]}" -ne 1 ]; then
-              echo "::error::Source ZIP not found or multiple ZIP files detected."
-              exit 1
-            fi
-
-            source_zip="${archives[0]}"
-          fi
-
-          if [ -n "$source_zip" ]; then
-
-            echo "Extracting: $source_zip"
-
+          if [ -n "$ZIP" ]; then
             mkdir -p "$RUNNER_TEMP/dhyra-source"
+            unzip -oq "$ZIP" -d "$RUNNER_TEMP/dhyra-source"
 
-            unzip -oq "$source_zip" \
-              -d "$RUNNER_TEMP/dhyra-source"
-
-            project_dir="$(
+            PROJECT="$(
               find "$RUNNER_TEMP/dhyra-source" \
-                -type f \
                 -name settings.gradle.kts \
                 -printf '%h\n' | head -n 1
             )"
 
-            if [ -z "$project_dir" ]; then
-              echo "::error::Android project not found inside ZIP."
+            if [ -z "$PROJECT" ]; then
+              echo "::error::Android project not found in ZIP."
               exit 1
             fi
 
-            cp -a "$project_dir"/. "$GITHUB_WORKSPACE"/
-
+            cp -a "$PROJECT"/. "$GITHUB_WORKSPACE"/
           fi
 
-          echo "Project preparation completed."
+          test -f settings.gradle.kts
+          echo "DHYRA project is ready."
 
-      # 8. Validate project files
-      - name: Validate Android project
+      - name: Validate DHYRA Browser v2.0.0
         shell: bash
         run: |
           set -euo pipefail
@@ -146,55 +100,49 @@ jobs:
 
           for file in "${required_files[@]}"; do
             if [ ! -f "$file" ]; then
-              echo "::error::Missing required file: $file"
+              echo "::error::Missing file: $file"
               exit 1
             fi
           done
 
-          grep -q 'versionName = "1.9.0"' app/build.gradle.kts
-          grep -q 'versionCode = 13' app/build.gradle.kts
+          grep -q 'versionName = "2.0.0"' app/build.gradle.kts || {
+            echo "::error::Expected versionName 2.0.0"
+            exit 1
+          }
 
-          echo "All project files validated."
+          grep -q 'versionCode = 14' app/build.gradle.kts || {
+            echo "::error::Expected versionCode 14"
+            exit 1
+          }
 
-      # 9. Restore or generate Gradle Wrapper
+          echo "DHYRA Browser 2.0.0 validation successful."
+
       - name: Restore or generate Gradle Wrapper
         shell: bash
         run: |
           set -euo pipefail
 
           if [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "Generating Gradle Wrapper..."
-
             gradle wrapper \
               --gradle-version 8.7 \
               --distribution-type bin
           fi
 
           chmod +x ./gradlew
-
           test -s gradle/wrapper/gradle-wrapper.jar
 
-          echo "Gradle Wrapper is ready."
-
-      # 10. Run unit tests
       - name: Run Unit Tests
         run: |
-          ./gradlew --no-daemon --stacktrace \
-            testDebugUnitTest
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest
 
-      # 11. Run Android Lint
       - name: Run Android Lint
         run: |
-          ./gradlew --no-daemon --stacktrace \
-            lintDebug
+          ./gradlew --no-daemon --stacktrace lintDebug
 
-      # 12. Build APK
       - name: Build DHYRA Browser APK
         run: |
-          ./gradlew --no-daemon --stacktrace \
-            :app:assembleDebug
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug
 
-      # 13. Verify APK
       - name: Verify APK
         shell: bash
         run: |
@@ -207,26 +155,25 @@ jobs:
             exit 1
           fi
 
-          echo "APK generated successfully."
           ls -lh "$APK"
+          echo "APK build successful."
 
-      # 14. Upload APK
       - name: Upload DHYRA Browser APK
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v1.9.0-debug
+          name: DHYRA-BROWSER-v2.0.0
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
-      # 15. Upload diagnostic reports if failed
       - name: Upload Diagnostic Reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v1.9.0-diagnostics
+          name: DHYRA-BROWSER-v2.0.0-diagnostics
           path: |
             app/build/reports/
             app/build/outputs/logs/
           if-no-files-found: ignore
           retention-days: 14
+          
