@@ -1,98 +1,142 @@
-name: DHYRA BROWSER - Build Android APK
+
+name: DHYRA BROWSER - AUTO BUILD APK
 
 on:
   push:
     branches: [main, master]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dhyra-android-${{ github.ref }}
+  group: dhyra-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
     name: Build Dhyra Browser v1.4.0
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Find and extract source ZIP
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android SDK Packages
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Detect Source ZIP
+        id: source
         shell: bash
         run: |
           set -e
 
-          ZIP_FILE="DHYRA_BROWSER_Air_Edition_v1.4.0.zip"
+          mapfile -t ZIPS < <(
+            find . -maxdepth 1 -type f -iname "*.zip" \
+            ! -name "repository-package.zip"
+          )
 
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "Source ZIP tidak ditemukan: $ZIP_FILE"
+          if [ "${#ZIPS[@]}" -eq 0 ]; then
+            echo "::error::Tidak ada file ZIP di root repository."
             exit 1
           fi
 
+          if [ "${#ZIPS[@]}" -gt 1 ]; then
+            echo "::error::Terlalu banyak ZIP. Sisakan satu ZIP source project."
+            printf '%s\n' "${ZIPS[@]}"
+            exit 1
+          fi
+
+          echo "zip=${ZIPS[0]}" >> "$GITHUB_OUTPUT"
+          echo "ZIP ditemukan: ${ZIPS[0]}"
+
+      - name: Extract Android Project
+        shell: bash
+        run: |
+          set -e
+
           mkdir -p "$RUNNER_TEMP/dhyra-source"
-          unzip -oq "$ZIP_FILE" -d "$RUNNER_TEMP/dhyra-source"
+
+          unzip -oq "${{ steps.source.outputs.zip }}" \
+            -d "$RUNNER_TEMP/dhyra-source"
 
           PROJECT_DIR=$(find "$RUNNER_TEMP/dhyra-source" \
-            -name settings.gradle.kts \
+            -type f -name settings.gradle.kts \
             -printf '%h\n' | head -n 1)
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "Project Android tidak ditemukan di dalam ZIP."
+            echo "::error::Project Android tidak ditemukan dalam ZIP."
             exit 1
           fi
 
+          echo "Project ditemukan: $PROJECT_DIR"
+
           cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
+      - name: Validate Project
         run: |
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          set -e
 
-      - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-
-      - name: Validate project
-        run: |
           test -f settings.gradle.kts
           test -f build.gradle.kts
           test -f app/build.gradle.kts
           test -f app/src/main/AndroidManifest.xml
 
+          echo "Semua file utama project ditemukan."
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
       - name: Build Debug APK
         run: |
-          gradle --no-daemon --stacktrace :app:assembleDebug
+          gradle --no-daemon \
+            --stacktrace \
+            :app:assembleDebug
+
+      - name: Verify APK
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "::error::APK tidak berhasil dibuat."
+            exit 1
+          fi
+
+          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v1.4.0-debug
+          name: DHYRA-BROWSER-v1.4.0-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload build reports
-        if: always()
+      - name: Upload Error Reports
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-build-reports
+          name: DHYRA-BROWSER-ERROR-REPORTS
           path: |
             app/build/reports/
             app/build/outputs/logs/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
