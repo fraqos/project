@@ -1,7 +1,9 @@
-name: DHYRA Browser v2.1.0 Android Build
+name: DHYRA Browser Android Build
 
 on:
   push:
+    branches: [main, master]
+  pull_request:
     branches: [main, master]
   workflow_dispatch:
 
@@ -14,19 +16,20 @@ concurrency:
 
 jobs:
   build:
-    name: Build DHYRA Browser v2.1.0
+    name: Validate, Test and Build DHYRA Browser
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -42,151 +45,139 @@ jobs:
             "platform-tools"
 
       - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.7'
 
-      # FIX: Support DHYRA v2.1.0 ZIP
-      - name: Prepare DHYRA project
+      - name: Prepare DHYRA project from repository or poc.zip
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ ! -f settings.gradle.kts ]; then
+          # If project files are already at repository root, use them as-is.
+          if [[ -s settings.gradle.kts && -s app/build.gradle.kts ]]; then
+            echo "Android project already exists at repository root."
+          else
+            ZIP_FILE=""
 
-            mapfile -t ZIPS < <(
-              find . -maxdepth 1 -type f \
-                -iname 'DHYRA_BROWSER*.zip' \
-                -print
+            # Prefer the user's renamed archive.
+            if [[ -s poc.zip ]]; then
+              ZIP_FILE="poc.zip"
+            else
+              mapfile -t ZIP_FILES < <(
+                find . -maxdepth 1 -type f -iname '*.zip' -print | sort
+              )
+
+              if [[ "${#ZIP_FILES[@]}" -ne 1 ]]; then
+                echo "::error::Expected poc.zip or exactly one ZIP archive at repository root."
+                printf 'Found ZIP files: %s\\n' "${ZIP_FILES[*]:-none}"
+                exit 1
+              fi
+
+              ZIP_FILE="${ZIP_FILES[0]}"
+            fi
+
+            echo "Extracting ${ZIP_FILE}..."
+            EXTRACT_DIR="$RUNNER_TEMP/dhyra-source"
+            mkdir -p "$EXTRACT_DIR"
+            unzip -oq "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+            mapfile -t PROJECT_DIRS < <(
+              find "$EXTRACT_DIR" -type f -name settings.gradle.kts \
+                -exec sh -c 'test -s "$(dirname "$1")/app/build.gradle.kts" && dirname "$1"' _ {} \; \
+                | sort -u
             )
 
-            if [ "${#ZIPS[@]}" -ne 1 ]; then
-              echo "::error::Expected exactly one DHYRA_BROWSER ZIP."
-              echo "Found: ${#ZIPS[@]}"
-              printf '%s\n' "${ZIPS[@]}"
+            if [[ "${#PROJECT_DIRS[@]}" -ne 1 ]]; then
+              echo "::error::Could not identify exactly one Android project containing settings.gradle.kts and app/build.gradle.kts."
+              printf '%s\\n' "${PROJECT_DIRS[@]:-none}"
               exit 1
             fi
 
-            mkdir -p "$RUNNER_TEMP/dhyra-source"
-
-            unzip -oq "${ZIPS[0]}" \
-              -d "$RUNNER_TEMP/dhyra-source"
-
-            PROJECT_DIR="$(
-              find "$RUNNER_TEMP/dhyra-source" \
-                -type f \
-                -name settings.gradle.kts \
-                -printf '%h\n' | head -n 1
-            )"
-
-            if [ -z "$PROJECT_DIR" ]; then
-              echo "::error::Android project not found inside ZIP."
-              exit 1
-            fi
-
+            PROJECT_DIR="${PROJECT_DIRS[0]}"
             cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
           fi
 
           test -s settings.gradle.kts
+          test -s build.gradle.kts
+          test -s gradle.properties
           test -s app/build.gradle.kts
-
           echo "DHYRA project prepared successfully."
 
-      - name: Validate DHYRA project
+      - name: Validate DHYRA project structure
         shell: bash
         run: |
           set -euo pipefail
 
-          FILES=(
+          REQUIRED_FILES=(
             settings.gradle.kts
             build.gradle.kts
             gradle.properties
+            gradle/wrapper/gradle-wrapper.properties
             app/build.gradle.kts
+            app/proguard-rules.pro
             app/src/main/AndroidManifest.xml
-            app/src/main/java/com/dhyra/browser/MainActivity.kt
             app/src/main/java/com/dhyra/browser/BrowserController.kt
+            app/src/test/java/com/dhyra/browser/BrowserAddressResolverTest.kt
           )
 
-          for FILE in "${FILES[@]}"; do
-            if [ ! -s "$FILE" ]; then
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [[ ! -s "$FILE" ]]; then
               echo "::error::Missing project file: $FILE"
               exit 1
             fi
           done
 
-          echo "Project validation passed."
-
-      - name: Restore or generate Gradle Wrapper
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
-            gradle wrapper \
-              --gradle-version 8.7 \
-              --distribution-type bin
+          # MainActivity is intentionally checked by class declaration because
+          # the source file in this ZIP is named MainActivity_HomeScreen_Rapih.kt.
+          if ! grep -R -qE 'class[[:space:]]+MainActivity([[:space:]]|:|\()' app/src/main/java/com/dhyra/browser --include='*.kt'; then
+            echo "::error::MainActivity class was not found in the browser source directory."
+            exit 1
           fi
 
-          chmod +x ./gradlew
+          echo "Project validation passed."
 
-          test -s gradle/wrapper/gradle-wrapper.jar
+      - name: Verify Gradle installation
+        run: gradle --version
 
-      - name: Verify Gradle version
-        run: ./gradlew --version
+      - name: Run core logic checks
+        run: gradle --no-daemon --stacktrace :app:verifyCoreLogic
 
-      - name: Run Unit Tests
-        run: |
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            testDebugUnitTest
-
-      - name: Run Android Lint
-        run: |
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            lintDebug
+      - name: Run Android lint
+        run: gradle --no-daemon --stacktrace :app:lintDebug
 
       - name: Build DHYRA Browser Debug APK
-        run: |
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            :app:assembleDebug
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
 
       - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
-
           APK="app/build/outputs/apk/debug/app-debug.apk"
 
-          if [ ! -s "$APK" ]; then
-            echo "::error::APK was not generated."
+          if [[ ! -s "$APK" ]]; then
+            echo "::error::Debug APK was not generated."
             exit 1
           fi
 
           ls -lh "$APK"
+          echo "APK verification passed."
 
-          echo "DHYRA APK verification passed."
-
-      - name: Upload DHYRA Browser APK
-        uses: actions/upload-artifact@v4
+      - name: Upload DHYRA Browser Debug APK
+        uses: actions/upload-artifact@v7
         with:
-          name: DHYRA-BROWSER-v2.1.0-debug
+          name: DHYRA-BROWSER-v1.4.1-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
       - name: Upload diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: DHYRA-BROWSER-v2.1.0-diagnostics
+          name: DHYRA-BROWSER-v1.4.1-diagnostics
           path: |
             app/build/reports/
             app/build/outputs/logs/
           if-no-files-found: ignore
           retention-days: 14
-          
