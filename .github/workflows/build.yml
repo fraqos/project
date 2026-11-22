@@ -42,17 +42,23 @@ jobs:
       - name: Validate project structure
         shell: bash
         run: |
-          set -euo pipefail
-          test -f settings.gradle.kts
-          test -f build.gradle.kts
-          test -f gradle.properties
-          test -f gradle/wrapper/gradle-wrapper.properties
-          test -f app/build.gradle.kts
-          test -f app/proguard-rules.pro
-          test -f app/src/main/AndroidManifest.xml
-          test -f app/src/main/java/com/dhyra/browser/MainActivity.kt
-          test -f app/src/main/java/com/dhyra/browser/BrowserController.kt
-          test -f app/src/test/java/com/dhyra/browser/BrowserAddressResolverTest.kt
+          missing=0
+          for f in \
+            settings.gradle.kts \
+            build.gradle.kts \
+            gradle.properties \
+            gradle/wrapper/gradle-wrapper.properties \
+            app/build.gradle.kts \
+            app/proguard-rules.pro \
+            app/src/main/AndroidManifest.xml \
+            app/src/main/java/com/dhyra/browser/MainActivity.kt \
+            app/src/main/java/com/dhyra/browser/BrowserController.kt \
+            app/src/test/java/com/dhyra/browser/BrowserAddressResolverTest.kt; do
+            if [ -f "$f" ]; then echo "OK      $f"; else echo "MISSING $f"; missing=1; fi
+          done
+          echo "--- isi root repo ---"
+          ls -la
+          exit $missing
 
       - name: Run core logic checks
         run: gradle --no-daemon --stacktrace :app:verifyCoreLogic
