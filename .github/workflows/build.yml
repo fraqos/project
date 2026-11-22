@@ -22,6 +22,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Extract source dari zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=$(ls *.zip | head -n 1)
+          echo "Mengekstrak $ZIP"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/src"
+          SRC_FILE=$(find "$RUNNER_TEMP/src" -name settings.gradle.kts -print -quit)
+          if [ -z "$SRC_FILE" ]; then
+            echo "::error::settings.gradle.kts tidak ditemukan di dalam zip"
+            exit 1
+          fi
+          SRC=$(dirname "$SRC_FILE")
+          # Jangan timpa workflow di .github dengan versi dari zip
+          rm -rf "$SRC/.github"
+          cp -a "$SRC/." .
+          echo "Source berhasil diekstrak ke root repo:"
+          ls -la
+
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:
@@ -56,8 +75,6 @@ jobs:
             app/src/test/java/com/dhyra/browser/BrowserAddressResolverTest.kt; do
             if [ -f "$f" ]; then echo "OK      $f"; else echo "MISSING $f"; missing=1; fi
           done
-          echo "--- isi root repo ---"
-          ls -la
           exit $missing
 
       - name: Run core logic checks
