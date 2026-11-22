@@ -1,10 +1,9 @@
-name: DHYRA Browser Android Build
+name: DHYRA BROWSER - Android CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
   pull_request:
-    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -15,11 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Validate, Test and Build DHYRA Browser
+  verify-and-build:
+    name: Core logic checks, lint and debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -29,116 +27,32 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
-
-      - name: Install Android SDK packages
-        run: |
-          sdkmanager --install \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "platform-tools"
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.7'
 
-      - name: Prepare DHYRA project from repository or poc.zip
+      - name: Validate project structure
         shell: bash
         run: |
           set -euo pipefail
-
-          # If project files are already at repository root, use them as-is.
-          if [[ -s settings.gradle.kts && -s app/build.gradle.kts ]]; then
-            echo "Android project already exists at repository root."
-          else
-            ZIP_FILE=""
-
-            # Prefer the user's renamed archive.
-            if [[ -s poc.zip ]]; then
-              ZIP_FILE="poc.zip"
-            else
-              mapfile -t ZIP_FILES < <(
-                find . -maxdepth 1 -type f -iname '*.zip' -print | sort
-              )
-
-              if [[ "${#ZIP_FILES[@]}" -ne 1 ]]; then
-                echo "::error::Expected poc.zip or exactly one ZIP archive at repository root."
-                printf 'Found ZIP files: %s\\n' "${ZIP_FILES[*]:-none}"
-                exit 1
-              fi
-
-              ZIP_FILE="${ZIP_FILES[0]}"
-            fi
-
-            echo "Extracting ${ZIP_FILE}..."
-            EXTRACT_DIR="$RUNNER_TEMP/dhyra-source"
-            mkdir -p "$EXTRACT_DIR"
-            unzip -oq "$ZIP_FILE" -d "$EXTRACT_DIR"
-
-            mapfile -t PROJECT_DIRS < <(
-              find "$EXTRACT_DIR" -type f -name settings.gradle.kts \
-                -exec sh -c 'test -s "$(dirname "$1")/app/build.gradle.kts" && dirname "$1"' _ {} \; \
-                | sort -u
-            )
-
-            if [[ "${#PROJECT_DIRS[@]}" -ne 1 ]]; then
-              echo "::error::Could not identify exactly one Android project containing settings.gradle.kts and app/build.gradle.kts."
-              printf '%s\\n' "${PROJECT_DIRS[@]:-none}"
-              exit 1
-            fi
-
-            PROJECT_DIR="${PROJECT_DIRS[0]}"
-            cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
-          fi
-
-          test -s settings.gradle.kts
-          test -s build.gradle.kts
-          test -s gradle.properties
-          test -s app/build.gradle.kts
-          echo "DHYRA project prepared successfully."
-
-      - name: Validate DHYRA project structure
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          REQUIRED_FILES=(
-            settings.gradle.kts
-            build.gradle.kts
-            gradle.properties
-            gradle/wrapper/gradle-wrapper.properties
-            app/build.gradle.kts
-            app/proguard-rules.pro
-            app/src/main/AndroidManifest.xml
-            app/src/main/java/com/dhyra/browser/BrowserController.kt
-            app/src/test/java/com/dhyra/browser/BrowserAddressResolverTest.kt
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            if [[ ! -s "$FILE" ]]; then
-              echo "::error::Missing project file: $FILE"
-              exit 1
-            fi
-          done
-
-          # MainActivity is intentionally checked by class declaration because
-          # the source file in this ZIP is named MainActivity_HomeScreen_Rapih.kt.
-          if ! grep -R -qE 'class[[:space:]]+MainActivity([[:space:]]|:|\()' app/src/main/java/com/dhyra/browser --include='*.kt'; then
-            echo "::error::MainActivity class was not found in the browser source directory."
-            exit 1
-          fi
-
-          echo "Project validation passed."
-
-      - name: Verify Gradle installation
-        run: gradle --version
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f gradle.properties
+          test -f gradle/wrapper/gradle-wrapper.properties
+          test -f app/build.gradle.kts
+          test -f app/proguard-rules.pro
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/dhyra/browser/MainActivity.kt
+          test -f app/src/main/java/com/dhyra/browser/BrowserController.kt
+          test -f app/src/test/java/com/dhyra/browser/BrowserAddressResolverTest.kt
 
       - name: Run core logic checks
         run: gradle --no-daemon --stacktrace :app:verifyCoreLogic
@@ -146,24 +60,10 @@ jobs:
       - name: Run Android lint
         run: gradle --no-daemon --stacktrace :app:lintDebug
 
-      - name: Build DHYRA Browser Debug APK
+      - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK="app/build/outputs/apk/debug/app-debug.apk"
-
-          if [[ ! -s "$APK" ]]; then
-            echo "::error::Debug APK was not generated."
-            exit 1
-          fi
-
-          ls -lh "$APK"
-          echo "APK verification passed."
-
-      - name: Upload DHYRA Browser Debug APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:
           name: DHYRA-BROWSER-v1.4.1-debug
@@ -171,13 +71,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload diagnostics on failure
-        if: failure()
+      - name: Upload diagnostic reports
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: DHYRA-BROWSER-v1.4.1-diagnostics
+          name: DHYRA-BROWSER-v1.4.1-build-reports
           path: |
             app/build/reports/
             app/build/outputs/logs/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
