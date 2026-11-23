@@ -22,15 +22,15 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # ==========================================================
+      # ==========================================
       # CHECKOUT
-      # ==========================================================
+      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ==========================================================
+      # ==========================================
       # LOCATE AND EXTRACT ANDROID PROJECT
-      # ==========================================================
+      # ==========================================
       - name: Locate Android project
         id: project
         shell: bash
@@ -46,7 +46,6 @@ jobs:
               -not -path '*/build/*' \
               -print0 |
             while IFS= read -r -d '' settings_file; do
-              local project_dir
               project_dir="$(dirname "$settings_file")"
 
               if [[ -f "$project_dir/gradlew" ]] &&
@@ -57,13 +56,14 @@ jobs:
             done
           }
 
-          # Search Android project directly in repository.
+          # Search project in repository first
           mapfile -t projects < <(
             find_project "$GITHUB_WORKSPACE" | sort -u
           )
 
-          # Extract ZIP files only when project is not found.
+          # Extract ZIP only when project is not found
           if [[ ${#projects[@]} -eq 0 ]]; then
+
             echo "Android project not found in repository."
             echo "Searching source ZIP files..."
 
@@ -77,19 +77,21 @@ jobs:
             )
 
             for archive in "${ZIP_FILES[@]}"; do
+
               extract_dir="$RUNNER_TEMP/source-${RANDOM}-${RANDOM}"
 
               mkdir -p "$extract_dir"
 
               unzip -q "$archive" -d "$extract_dir"
 
-              echo "Extracted archive: $archive"
+              echo "Extracted: $archive"
 
               while IFS= read -r found_project; do
                 if [[ -n "$found_project" ]]; then
                   projects+=("$found_project")
                 fi
               done < <(find_project "$extract_dir")
+
             done
 
             mapfile -t projects < <(
@@ -99,7 +101,7 @@ jobs:
             )
           fi
 
-          # Exactly one project is required.
+          # Validate project count
           if [[ ${#projects[@]} -ne 1 ]]; then
             echo "::error::Expected exactly one Android project."
             echo "Detected projects: ${#projects[@]}"
@@ -107,7 +109,6 @@ jobs:
             printf 'Project candidates:\n'
             printf '  %s\n' "${projects[@]}"
 
-            echo "Ensure the repository or source ZIP contains one Android project."
             exit 1
           fi
 
@@ -120,26 +121,27 @@ jobs:
           echo "$PROJECT_ROOT"
           echo "=========================================="
 
-      # ==========================================================
+      # ==========================================
       # JAVA 17
-      # ==========================================================
+      # ==========================================
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      # ==========================================================
-      # ANDROID SDK
-      # ==========================================================
+      # ==========================================
+      # ANDROID SDK SETUP
+      # ==========================================
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
+          packages: ''
 
-      # ==========================================================
-      # INSTALL SDK
-      # ==========================================================
+      # ==========================================
+      # INSTALL ANDROID SDK PACKAGES
+      # ==========================================
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -150,17 +152,17 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # ==========================================================
+      # ==========================================
       # GRADLE CACHE
-      # ==========================================================
+      # ==========================================
       - name: Set up Gradle caching
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
 
-      # ==========================================================
+      # ==========================================
       # VALIDATE PROJECT
-      # ==========================================================
+      # ==========================================
       - name: Validate Android project
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
@@ -169,7 +171,7 @@ jobs:
 
           chmod +x ./gradlew
 
-          echo "Checking Android project structure..."
+          echo "Checking project structure..."
 
           test -f settings.gradle.kts || test -f settings.gradle
           test -f build.gradle.kts || test -f build.gradle
@@ -182,13 +184,11 @@ jobs:
 
           echo "Project structure validation passed."
 
-          echo "Checking Gradle version..."
-
           ./gradlew --version
 
-      # ==========================================================
+      # ==========================================
       # CORE LOGIC CHECKS
-      # ==========================================================
+      # ==========================================
       - name: Run core browser logic checks
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
@@ -198,16 +198,16 @@ jobs:
           TASKS_OUTPUT="$(./gradlew --no-daemon tasks --all)"
 
           if echo "$TASKS_OUTPUT" | grep -q 'verifyCoreLogic'; then
-            echo "verifyCoreLogic task detected."
+            echo "Running verifyCoreLogic..."
             ./gradlew --no-daemon --stacktrace :app:verifyCoreLogic
           else
             echo "verifyCoreLogic task not found."
             echo "Skipping optional core logic check."
           fi
 
-      # ==========================================================
+      # ==========================================
       # ANDROID LINT
-      # ==========================================================
+      # ==========================================
       - name: Run Android lint
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
@@ -216,9 +216,9 @@ jobs:
 
           ./gradlew --no-daemon --stacktrace :app:lintDebug
 
-      # ==========================================================
+      # ==========================================
       # BUILD APK
-      # ==========================================================
+      # ==========================================
       - name: Build debug APK
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
@@ -227,9 +227,9 @@ jobs:
 
           ./gradlew --no-daemon --stacktrace :app:assembleDebug
 
-      # ==========================================================
+      # ==========================================
       # VERIFY APK
-      # ==========================================================
+      # ==========================================
       - name: Verify APK
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
@@ -246,9 +246,9 @@ jobs:
           echo "APK successfully generated:"
           ls -lh "$APK"
 
-      # ==========================================================
+      # ==========================================
       # UPLOAD APK ARTIFACT
-      # ==========================================================
+      # ==========================================
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -257,9 +257,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ==========================================================
+      # ==========================================
       # UPLOAD DIAGNOSTIC REPORTS
-      # ==========================================================
+      # ==========================================
       - name: Upload diagnostic reports
         if: always()
         uses: actions/upload-artifact@v4
