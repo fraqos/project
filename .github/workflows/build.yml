@@ -25,11 +25,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate Android project source
+      - name: Extract and locate Android project
         id: project
         shell: bash
         run: |
           set -euo pipefail
+
+          SEARCH_DIRS=("$GITHUB_WORKSPACE")
+          mapfile -t ZIP_FILES < <(
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -iname '*.zip' \
+              -print |
+            sort
+          )
+
+          for archive in "${ZIP_FILES[@]}"; do
+            extract_dir="$RUNNER_TEMP/source-${RANDOM}-${RANDOM}"
+            mkdir -p "$extract_dir"
+            unzip -q "$archive" -d "$extract_dir"
+            SEARCH_DIRS+=("$extract_dir")
+            echo "Extracted: $archive"
+          done
+
+          declare -a projects=()
 
           find_project() {
             local search_root="$1"
@@ -46,43 +65,33 @@ jobs:
                    [[ -f "$project_dir/app/build.gradle" ]]; }; then
                 printf '%s\n' "$project_dir"
               fi
-            done | sort -u
+            done
           }
 
-          mapfile -t projects < <(find_project "$GITHUB_WORKSPACE")
+          for search_dir in "${SEARCH_DIRS[@]}"; do
+            while IFS= read -r found_project; do
+              [[ -n "$found_project" ]] &&
+                projects+=("$found_project")
+            done < <(find_project "$search_dir")
+          done
 
-          if [[ ${#projects[@]} -eq 0 ]]; then
-            mapfile -t source_zips < <(
-              find "$GITHUB_WORKSPACE" \
-                -maxdepth 6 \
-                -type f \
-                -iname '*.zip' \
-                -print |
-              sort
-            )
-
-            for archive in "${source_zips[@]}"; do
-              extract_dir="$RUNNER_TEMP/dhyra-source-${RANDOM}"
-              mkdir -p "$extract_dir"
-              unzip -q "$archive" -d "$extract_dir"
-
-              mapfile -t projects < <(find_project "$extract_dir")
-
-              if [[ ${#projects[@]} -gt 0 ]]; then
-                echo "Source project extracted from: $archive"
-                break
-              fi
-            done
-          fi
+          mapfile -t projects < <(
+            printf '%s\n' "${projects[@]}" |
+            sort -u
+          )
 
           if [[ ${#projects[@]} -ne 1 ]]; then
-            echo "Expected exactly one Android project with settings file, gradlew and app module; found ${#projects[@]}" >&2
-            echo "Commit the extracted Android project contents or provide exactly one source ZIP." >&2
+            echo "Found ${#projects[@]} Android projects." >&2
+            printf 'Candidate projects:\n' >&2
+            printf '  %s\n' "${projects[@]}" >&2
+            echo "Repository must contain exactly one Android project." >&2
             exit 1
           fi
 
           project_root="${projects[0]}"
+
           echo "dir=$project_root" >> "$GITHUB_OUTPUT"
+          echo "project-root=$project_root" >> "$GITHUB_ENV"
           echo "Detected Android project: $project_root"
 
       - name: Set up JDK 17
@@ -90,7 +99,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -101,8 +109,6 @@ jobs:
 
       - name: Install Android SDK packages
         shell: bash
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           set -euo pipefail
 
@@ -113,10 +119,10 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-          sdkmanager --list_installed
-
       - name: Set up Gradle caching
         uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
 
       - name: Validate project and Gradle wrapper
         shell: bash
