@@ -26,16 +26,13 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ==================================================
       # 1. DETECT AND SELECT ANDROID PROJECT
-      # ==================================================
       - name: Detect Android Project
         id: project
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          SEARCH_ROOT="$GITHUB_WORKSPACE"
           EXTRACT_ROOT="$RUNNER_TEMP/dhyra-extracted"
           mkdir -p "$EXTRACT_ROOT"
 
@@ -74,15 +71,14 @@ jobs:
             )
           }
 
-          # Search the repository first.
+          # Search existing repository first.
           mapfile -t PROJECTS < <(
             discover_projects "$GITHUB_WORKSPACE" |
             sort -u
           )
 
-          # ZIP fallback if no complete project is found.
+          # ZIP fallback.
           if [[ ${#PROJECTS[@]} -eq 0 ]]; then
-            echo "No complete Android project found in repository."
             echo "Searching source ZIP archives..."
 
             mapfile -t ZIP_FILES < <(
@@ -96,18 +92,17 @@ jobs:
             )
 
             if [[ ${#ZIP_FILES[@]} -eq 0 ]]; then
-              echo "::error::No Android project or source ZIP found."
+              echo "::error::No Android project or ZIP archive found."
               exit 1
             fi
 
             for ZIP_FILE in "${ZIP_FILES[@]}"; do
-              echo "Extracting: $ZIP_FILE"
-
               ZIP_NAME="$(basename "$ZIP_FILE" .zip)"
               ZIP_DEST="$EXTRACT_ROOT/$ZIP_NAME"
 
               mkdir -p "$ZIP_DEST"
 
+              echo "Extracting: $ZIP_FILE"
               unzip -oq "$ZIP_FILE" -d "$ZIP_DEST"
 
               mapfile -t FOUND < <(
@@ -123,7 +118,7 @@ jobs:
             PROJECTS=("${ZIP_PROJECTS[@]}")
           fi
 
-          # Remove duplicate candidates.
+          # Remove duplicates.
           mapfile -t PROJECTS < <(
             printf '%s\n' "${PROJECTS[@]}" |
             sed '/^$/d' |
@@ -132,18 +127,10 @@ jobs:
 
           if [[ ${#PROJECTS[@]} -eq 0 ]]; then
             echo "::error::No valid Android project detected."
-            echo "Required files:"
-            echo " - gradlew"
-            echo " - settings.gradle or settings.gradle.kts"
-            echo " - app/build.gradle or app/build.gradle.kts"
-            echo " - app/src/main/AndroidManifest.xml"
             exit 1
           fi
 
-          # ==================================================
-          # 2. SELECT THE MOST COMPLETE PROJECT
-          # ==================================================
-
+          # Select best candidate.
           BEST_PROJECT=""
           BEST_SCORE=-1
           BEST_LENGTH=999999
@@ -163,8 +150,8 @@ jobs:
 
             LENGTH=${#PROJECT}
 
-            echo "Candidate: $PROJECT"
-            echo "Score: $SCORE"
+            echo "Project candidate: $PROJECT"
+            echo "Project score: $SCORE"
 
             if [[ "$SCORE" -gt "$BEST_SCORE" ]] ||
                { [[ "$SCORE" -eq "$BEST_SCORE" ]] &&
@@ -183,26 +170,21 @@ jobs:
 
           echo "dir=$BEST_PROJECT" >> "$GITHUB_OUTPUT"
 
-          echo "=========================================="
+          echo "======================================"
           echo "ANDROID PROJECT SELECTED"
           echo "$BEST_PROJECT"
-          echo "Score: $BEST_SCORE"
           echo "Candidates: ${#PROJECTS[@]}"
-          echo "=========================================="
+          echo "Score: $BEST_SCORE"
+          echo "======================================"
 
-      # ==================================================
-      # 3. JAVA
-      # ==================================================
+      # 2. JAVA 17
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      # ==================================================
-      # 4. ANDROID SDK
-      # ==================================================
+      # 3. ANDROID SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
@@ -219,17 +201,13 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # ==================================================
-      # 5. GRADLE CACHE
-      # ==================================================
+      # 4. GRADLE SETUP (CACHE DISABLED)
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: false
+          cache-disabled: true
 
-      # ==================================================
-      # 6. VALIDATE PROJECT
-      # ==================================================
+      # 5. VALIDATE PROJECT
       - name: Validate Android Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -237,8 +215,6 @@ jobs:
           set -Eeuo pipefail
 
           chmod +x ./gradlew
-
-          echo "Checking Android project files..."
 
           test -f gradlew
           test -f gradle/wrapper/gradle-wrapper.properties
@@ -261,9 +237,7 @@ jobs:
 
           ./gradlew --version
 
-      # ==================================================
-      # 7. OPTIONAL CORE LOGIC CHECK
-      # ==================================================
+      # 6. OPTIONAL CORE LOGIC CHECK
       - name: Run Core Logic Check
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -273,16 +247,14 @@ jobs:
           TASKS_OUTPUT="$(./gradlew --no-daemon tasks --all)"
 
           if grep -q 'verifyCoreLogic' <<< "$TASKS_OUTPUT"; then
-            echo "Running verifyCoreLogic task..."
+            echo "Running verifyCoreLogic..."
             ./gradlew --no-daemon --stacktrace :app:verifyCoreLogic
           else
-            echo "verifyCoreLogic task not present."
-            echo "Skipping optional task."
+            echo "verifyCoreLogic task not found."
+            echo "Skipping optional check."
           fi
 
-      # ==================================================
-      # 8. LINT
-      # ==================================================
+      # 7. ANDROID LINT
       - name: Android Lint
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -294,9 +266,7 @@ jobs:
             --stacktrace \
             :app:lintDebug
 
-      # ==================================================
-      # 9. BUILD APK
-      # ==================================================
+      # 8. BUILD APK
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -308,11 +278,8 @@ jobs:
             --stacktrace \
             :app:assembleDebug
 
-      # ==================================================
-      # 10. VERIFY APK
-      # ==================================================
+      # 9. VERIFY APK
       - name: Verify APK Output
-        id: apk
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
@@ -332,17 +299,10 @@ jobs:
             exit 1
           fi
 
-          echo "apk=$APK" >> "$GITHUB_OUTPUT"
-
-          echo "=========================================="
           echo "APK BUILD SUCCESS"
-          echo "=========================================="
-
           ls -lh "$APK"
 
-      # ==================================================
-      # 11. UPLOAD APK
-      # ==================================================
+      # 10. UPLOAD APK
       - name: Upload DHYRA Browser APK
         uses: actions/upload-artifact@v4
         with:
@@ -351,10 +311,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ==================================================
-      # 12. UPLOAD BUILD REPORTS
-      # ==================================================
-      - name: Upload Diagnostic Reports
+      # 11. UPLOAD DIAGNOSTIC REPORTS
+      - name: Upload Build Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
