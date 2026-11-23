@@ -18,14 +18,11 @@ jobs:
     name: Verify and build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      # Supports all three upload styles:
-      # 1) Gradle project at repository root;
-      # 2) project inside one parent folder;
-      # 3) source ZIP committed to the repository without extraction.
       - name: Locate Android project source
         id: project
         shell: bash
@@ -34,46 +31,43 @@ jobs:
 
           find_project() {
             local search_root="$1"
-            local -a found=()
-            mapfile -t found < <(
-              find "$search_root" -type f -name settings.gradle.kts \
-                -not -path '*/.gradle/*' -print0 |
-              while IFS= read -r -d '' settings_file; do
-                project_dir="${settings_file%/settings.gradle.kts}"
-                if [[ -f "$project_dir/gradlew" && -f "$project_dir/app/build.gradle.kts" ]]; then
-                  printf '%s\n' "$project_dir"
-                fi
-              done | sort -u
-            )
-            if [[ ${#found[@]} -gt 0 ]]; then
-              printf '%s\n' "${found[@]}"
-            fi
+            find "$search_root" -type f \
+              \( -name settings.gradle.kts -o -name settings.gradle \) \
+              -not -path '*/.gradle/*' -print0 |
+            while IFS= read -r -d '' settings_file; do
+              project_dir="$(dirname "$settings_file")"
+              if [[ -f "$project_dir/gradlew" && \
+                    ( -f "$project_dir/app/build.gradle.kts" || -f "$project_dir/app/build.gradle" ) ]]; then
+                printf '%s\n' "$project_dir"
+              fi
+            done | sort -u
           }
 
           mapfile -t projects < <(find_project "$GITHUB_WORKSPACE")
 
           if [[ ${#projects[@]} -eq 0 ]]; then
-            mapfile -t source_zips < <(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -iname '*.zip' -print | sort)
+            mapfile -t source_zips < <(find "$GITHUB_WORKSPACE" -maxdepth 6 -type f -iname '*.zip' -print | sort)
             for archive in "${source_zips[@]}"; do
-              extract_dir="$RUNNER_TEMP/dhyra-source-$RANDOM"
+              extract_dir="$RUNNER_TEMP/dhyra-source-${RANDOM}"
               mkdir -p "$extract_dir"
               unzip -q "$archive" -d "$extract_dir"
               mapfile -t projects < <(find_project "$extract_dir")
               if [[ ${#projects[@]} -gt 0 ]]; then
-                echo "Project source extracted from: $archive"
+                echo "Source project extracted from: $archive"
                 break
               fi
             done
           fi
 
           if [[ ${#projects[@]} -ne 1 ]]; then
-            echo "Expected exactly one Android project containing settings.gradle.kts, gradlew and app/build.gradle.kts; found ${#projects[@]}." >&2
-            echo "Upload the extracted project contents or commit one source ZIP." >&2
+            echo "Expected exactly one Android project with settings file, gradlew and app Gradle file; found ${#projects[@]}" >&2
+            echo "Commit extracted project contents or provide one source ZIP." >&2
             exit 1
           fi
 
-          echo "dir=${projects[0]}" >> "$GITHUB_OUTPUT"
-          echo "Android project root: ${projects[0]}"
+          project_root="${projects[0]}"
+          echo "dir=$project_root" >> "$GITHUB_OUTPUT"
+          echo "Detected Android project: $project_root"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v6
@@ -85,43 +79,45 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Set up Gradle 8.7 and cache
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: '8.7'
-
-      - name: Validate project structure
         shell: bash
         run: |
           set -euo pipefail
-          cd "${{ steps.project.outputs.dir }}"
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Set up Gradle caching
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Validate project and Gradle wrapper
+        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          set -euo pipefail
           chmod +x ./gradlew
-          test -f settings.gradle.kts
-          test -f build.gradle.kts
+          test -f settings.gradle.kts || test -f settings.gradle
+          test -f build.gradle.kts || test -f build.gradle
           test -f gradle.properties
           test -f gradle/wrapper/gradle-wrapper.properties
           test -f gradlew
-          test -f app/build.gradle.kts
-          test -f app/proguard-rules.pro
+          test -f app/build.gradle.kts || test -f app/build.gradle
           test -f app/src/main/AndroidManifest.xml
-          test -f app/src/main/java/com/dhyra/browser/MainActivity.kt
-          test -f app/src/main/java/com/dhyra/browser/BrowserController.kt
-          test -f app/src/test/java/com/dhyra/browser/BrowserAddressResolverTest.kt
           ./gradlew --version
 
       - name: Run core browser logic checks
-        run: ./gradlew --no-daemon --stacktrace :app:verifyCoreLogic
         working-directory: ${{ steps.project.outputs.dir }}
+        run: ./gradlew --no-daemon --stacktrace :app:verifyCoreLogic
 
       - name: Run Android lint
-        run: ./gradlew --no-daemon --stacktrace :app:lintDebug
         working-directory: ${{ steps.project.outputs.dir }}
+        run: ./gradlew --no-daemon --stacktrace :app:lintDebug
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
         working-directory: ${{ steps.project.outputs.dir }}
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Verify APK exists
+        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: test -s app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
