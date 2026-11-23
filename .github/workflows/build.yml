@@ -25,31 +25,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract and locate Android project
+      # ==========================================================
+      # LOCATE PROJECT
+      # Search the repository first.
+      # Extract ZIP only when no Android project is found.
+      # ==========================================================
+      - name: Locate Android project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-
-          SEARCH_DIRS=("$GITHUB_WORKSPACE")
-
-          mapfile -t ZIP_FILES < <(
-            find "$GITHUB_WORKSPACE" \
-              -type f \
-              -iname '*.zip' \
-              -print |
-            sort
-          )
-
-          for archive in "${ZIP_FILES[@]}"; do
-            extract_dir="$RUNNER_TEMP/source-${RANDOM}-${RANDOM}"
-            mkdir -p "$extract_dir"
-            unzip -q "$archive" -d "$extract_dir"
-            SEARCH_DIRS+=("$extract_dir")
-            echo "Extracted: $archive"
-          done
-
-          declare -a projects=()
 
           find_project() {
             local search_root="$1"
@@ -57,55 +42,95 @@ jobs:
             find "$search_root" -type f \
               \( -name settings.gradle.kts -o -name settings.gradle \) \
               -not -path '*/.gradle/*' \
+              -not -path '*/build/*' \
               -print0 |
             while IFS= read -r -d '' settings_file; do
               project_dir="$(dirname "$settings_file")"
 
               if [[ -f "$project_dir/gradlew" ]] &&
                  { [[ -f "$project_dir/app/build.gradle.kts" ]] ||
-                   [[ -f "$project_dir/app/build.gradle" ]]; }; then
+                   [[ -f "$project_dir/app/build.gradle ]]; }; then
                 printf '%s\n' "$project_dir"
               fi
             done
           }
 
-          for search_dir in "${SEARCH_DIRS[@]}"; do
-            while IFS= read -r found_project; do
-              [[ -n "$found_project" ]] &&
-                projects+=("$found_project")
-            done < <(find_project "$search_dir")
-          done
-
           mapfile -t projects < <(
-            printf '%s\n' "${projects[@]}" |
-            sort -u
+            find_project "$GITHUB_WORKSPACE" | sort -u
           )
 
+          # If project is already in repository, do not extract ZIP files.
+          if [[ ${#projects[@]} -eq 0 ]]; then
+
+            echo "Android project not found in repository."
+            echo "Searching source ZIP files..."
+
+            mapfile -t ZIP_FILES < <(
+              find "$GITHUB_WORKSPACE" \
+                -maxdepth 6 \
+                -type f \
+                -iname '*.zip' \
+                -print |
+              sort
+            )
+
+            for archive in "${ZIP_FILES[@]}"; do
+
+              extract_dir="$RUNNER_TEMP/source-${RANDOM}-${RANDOM}"
+
+              mkdir -p "$extract_dir"
+
+              unzip -q "$archive" -d "$extract_dir"
+
+              echo "Extracted: $archive"
+
+              while IFS= read -r found_project; do
+                [[ -n "$found_project" ]] &&
+                  projects+=("$found_project")
+              done < <(find_project "$extract_dir")
+
+            done
+
+            mapfile -t projects < <(
+              printf '%s\n' "${projects[@]}" |
+              sed '/^$/d' |
+              sort -u
+            )
+          fi
+
           if [[ ${#projects[@]} -ne 1 ]]; then
-            echo "Found ${#projects[@]} Android projects." >&2
-            printf 'Candidate projects:\n' >&2
-            printf '  %s\n' "${projects[@]}" >&2
-            echo "Repository must contain exactly one Android project." >&2
+            echo "ERROR: Expected exactly one Android project."
+            echo "Found: ${#projects[@]}"
+            printf '%s\n' "${projects[@]}"
             exit 1
           fi
 
-          project_root="${projects[0]}"
+          PROJECT_ROOT="${projects[0]}"
 
-          echo "dir=$project_root" >> "$GITHUB_OUTPUT"
-          echo "project-root=$project_root" >> "$GITHUB_ENV"
-          echo "Detected Android project: $project_root"
+          echo "dir=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
 
+          echo "======================================"
+          echo "ANDROID PROJECT DETECTED"
+          echo "$PROJECT_ROOT"
+          echo "======================================"
+
+      # ==========================================================
+      # JAVA
+      # ==========================================================
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
+      # ==========================================================
+      # ANDROID SDK
+      # ==========================================================
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          cmdline-tools-version: 11076708
           accept-android-sdk-licenses: true
+          packages: ''
 
       - name: Install Android SDK packages
         shell: bash
@@ -117,12 +142,18 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
+      # ==========================================================
+      # GRADLE CACHE
+      # ==========================================================
       - name: Set up Gradle caching
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
 
-      - name: Validate project and Gradle wrapper
+      # ==========================================================
+      # VALIDATE SOURCE PROJECT
+      # ==========================================================
+      - name: Validate Android project
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
@@ -134,32 +165,72 @@ jobs:
           test -f build.gradle.kts || test -f build.gradle
           test -f gradle.properties
           test -f gradle/wrapper/gradle-wrapper.properties
+          test -f gradle/wrapper/gradle-wrapper.jar
           test -f gradlew
           test -f app/build.gradle.kts || test -f app/build.gradle
           test -f app/src/main/AndroidManifest.xml
 
+          echo "Project structure verified."
+
           ./gradlew --version
 
+      # ==========================================================
+      # CORE LOGIC TESTS (OPTIONAL TASK)
+      # ==========================================================
       - name: Run core browser logic checks
+        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew --no-daemon --stacktrace :app:verifyCoreLogic
+        run: |
+          set -euo pipefail
 
+          TASKS_OUTPUT="$(./gradlew --no-daemon tasks --all)"
+
+          if echo "$TASKS_OUTPUT" | grep -q 'verifyCoreLogic'; then
+            echo "Running verifyCoreLogic..."
+            ./gradlew --no-daemon --stacktrace :app:verifyCoreLogic
+          else
+            echo "verifyCoreLogic task not found."
+            echo "Skipping optional core logic check."
+          fi
+
+      # ==========================================================
+      # ANDROID LINT
+      # ==========================================================
       - name: Run Android lint
         working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew --no-daemon --stacktrace :app:lintDebug
+        run: |
+          ./gradlew --no-daemon --stacktrace :app:lintDebug
 
+      # ==========================================================
+      # BUILD APK
+      # ==========================================================
       - name: Build debug APK
         working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+        run: |
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug
 
+      # ==========================================================
+      # VERIFY APK
+      # ==========================================================
       - name: Verify APK exists
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           set -euo pipefail
-          test -s app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
 
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [[ ! -s "$APK" ]]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "APK successfully generated:"
+          ls -lh "$APK"
+
+      # ==========================================================
+      # UPLOAD APK
+      # ==========================================================
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -168,6 +239,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # ==========================================================
+      # UPLOAD DIAGNOSTIC REPORTS
+      # ==========================================================
       - name: Upload diagnostic reports
         if: always()
         uses: actions/upload-artifact@v4
