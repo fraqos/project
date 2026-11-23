@@ -30,7 +30,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Gradle 8.7
+      - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
@@ -43,28 +43,138 @@ jobs:
           packages: ''
 
       - name: Install Android SDK Components
+        shell: bash
         run: |
+          set -euo pipefail
+
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Verify Project Structure
+      - name: Locate and Extract Android Project
+        id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Checking Android project..."
+          TEMP_ROOT="$RUNNER_TEMP/dhyra-project"
+          mkdir -p "$TEMP_ROOT"
 
-          test -f settings.gradle.kts
-          test -f build.gradle.kts
-          test -f app/build.gradle.kts
+          find_project() {
+            local ROOT="$1"
+
+            find "$ROOT" \
+              -type f \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+              -not -path "*/.git/*" \
+              -not -path "*/build/*" \
+              -print |
+            while IFS= read -r SETTINGS; do
+              PROJECT_DIR="$(dirname "$SETTINGS")"
+
+              if [[ -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml" ]] &&
+                 { [[ -f "$PROJECT_DIR/app/build.gradle" ]] ||
+                   [[ -f "$PROJECT_DIR/app/build.gradle.kts" ]]; }; then
+                echo "$PROJECT_DIR"
+              fi
+            done
+          }
+
+          # First: look for project directly in repository.
+          mapfile -t PROJECTS < <(
+            find_project "$GITHUB_WORKSPACE" |
+            sort -u
+          )
+
+          # If project is not present, extract ZIP archives.
+          if [[ ${#PROJECTS[@]} -eq 0 ]]; then
+            echo "Android project not found directly."
+            echo "Searching ZIP files..."
+
+            mapfile -t ZIP_FILES < <(
+              find "$GITHUB_WORKSPACE" \
+                -type f \
+                -iname "*.zip" \
+                -not -path "*/.git/*" \
+                -print |
+              sort
+            )
+
+            if [[ ${#ZIP_FILES[@]} -eq 0 ]]; then
+              echo "::error::No Android project or ZIP file found."
+              exit 1
+            fi
+
+            ZIP_INDEX=0
+
+            for ZIP_FILE in "${ZIP_FILES[@]}"; do
+              ZIP_INDEX=$((ZIP_INDEX + 1))
+              DEST="$TEMP_ROOT/archive-$ZIP_INDEX"
+
+              mkdir -p "$DEST"
+
+              echo "Extracting archive: $ZIP_FILE"
+
+              unzip -oq "$ZIP_FILE" -d "$DEST"
+
+              mapfile -t FOUND_PROJECTS < <(
+                find_project "$DEST" |
+                sort -u
+              )
+
+              for FOUND in "${FOUND_PROJECTS[@]}"; do
+                PROJECTS+=("$FOUND")
+              done
+            done
+          fi
+
+          # Remove duplicates.
+          mapfile -t PROJECTS < <(
+            printf '%s\n' "${PROJECTS[@]}" |
+            sed '/^$/d' |
+            sort -u
+          )
+
+          if [[ ${#PROJECTS[@]} -eq 0 ]]; then
+            echo "::error::No valid Android project detected."
+            exit 1
+          fi
+
+          # Select the project with the shortest path.
+          SELECTED="${PROJECTS[0]}"
+
+          for CANDIDATE in "${PROJECTS[@]}"; do
+            if [[ ${#CANDIDATE} -lt ${#SELECTED} ]]; then
+              SELECTED="$CANDIDATE"
+            fi
+          done
+
+          echo "project_dir=$SELECTED" >> "$GITHUB_OUTPUT"
+
+          echo "===================================="
+          echo "ANDROID PROJECT FOUND"
+          echo "$SELECTED"
+          echo "===================================="
+
+      - name: Verify Android Project
+        shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking project files..."
+
+          test -f settings.gradle.kts || test -f settings.gradle
+          test -f build.gradle.kts || test -f build.gradle
+          test -f app/build.gradle.kts || test -f app/build.gradle
           test -f app/src/main/AndroidManifest.xml
 
           echo "Project structure verified."
 
       - name: Build Debug APK
         shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
 
@@ -75,23 +185,24 @@ jobs:
 
       - name: Verify APK
         shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
 
           APK="app/build/outputs/apk/debug/app-debug.apk"
 
-          if [ ! -s "$APK" ]; then
-            echo "::error::APK not found."
+          if [[ ! -s "$APK" ]]; then
+            echo "::error::APK was not generated."
             exit 1
           fi
 
-          echo "APK successfully generated."
+          echo "APK BUILD SUCCESS"
           ls -lh "$APK"
 
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DHYRA-BROWSER-v1.4.1
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: DHYRA-BROWSER-v1.4.1-APK
+          path: ${{ steps.project.outputs.project_dir }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
