@@ -1,15 +1,15 @@
-name: DHYRA Browser - Build from ZIP
+name: DHYRA Browser - Build Android APK from ZIP
 
 on:
   push:
     branches: [main, master]
     paths:
-      - '**.zip'
-      - '.github/workflows/build.yml'
+      - '*.zip'
+      - '.github/workflows/main.yml'
   workflow_dispatch:
     inputs:
       build_release:
-        description: 'Build an additional unsigned release APK'
+        description: 'Also build an unsigned release APK'
         required: false
         default: false
         type: boolean
@@ -28,10 +28,10 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout repository (ZIP only is required for source)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project ZIP and locate Gradle root
+      - name: Extract uploaded ZIP and locate Android project
         id: project
         shell: bash
         run: |
@@ -40,84 +40,67 @@ jobs:
           python3 <<'PY'
           import os
           import shutil
-          import stat
           import sys
           import zipfile
           from pathlib import Path, PurePosixPath
 
-          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
-          destination = workspace / ".ci-dhyra-unpacked"
+          workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          destination = workspace / '.ci-dhyra-unpacked'
 
-          # Expect exactly one project ZIP in the repository root.
           archives = sorted(
               p for p in workspace.iterdir()
-              if p.is_file() and p.suffix.lower() == ".zip"
+              if p.is_file() and p.suffix.lower() == '.zip'
           )
           if not archives:
-              sys.exit(
-                  "ERROR: No .zip file found at repository root. "
-                  "Upload the DHYRA project ZIP to the repository root."
-              )
-          if len(archives) > 1:
-              names = ", ".join(p.name for p in archives)
-              sys.exit(
-                  "ERROR: More than one root-level ZIP was found: " + names +
-                  ". Keep only the DHYRA project ZIP in the repository root."
-              )
+              sys.exit('ERROR: No .zip file found in the repository root. Upload the DHYRA ZIP to the root.')
+          if len(archives) != 1:
+              sys.exit('ERROR: Keep exactly one project ZIP in the repository root. Found: ' + ', '.join(p.name for p in archives))
 
           archive = archives[0]
-          print(f"Project archive: {archive.name}")
+          print(f'Using project archive: {archive.name}')
           if destination.exists():
               shutil.rmtree(destination)
           destination.mkdir(parents=True)
 
-          # Extract safely: reject absolute paths and parent-directory traversal.
           with zipfile.ZipFile(archive) as zf:
               for item in zf.infolist():
                   member = PurePosixPath(item.filename)
-                  if member.is_absolute() or ".." in member.parts:
-                      sys.exit(f"ERROR: Unsafe ZIP entry: {item.filename}")
+                  if member.is_absolute() or '..' in member.parts:
+                      sys.exit(f'ERROR: Unsafe ZIP entry: {item.filename}')
                   if not member.parts:
                       continue
                   target = destination.joinpath(*member.parts).resolve()
-                  if not target.is_relative_to(destination.resolve()):
-                      sys.exit(f"ERROR: ZIP entry escapes extraction folder: {item.filename}")
+                  if not target.is_relative_to(destination):
+                      sys.exit(f'ERROR: ZIP entry escapes extraction directory: {item.filename}')
                   if item.is_dir():
                       target.mkdir(parents=True, exist_ok=True)
                   else:
                       target.parent.mkdir(parents=True, exist_ok=True)
-                      with zf.open(item) as source, target.open("wb") as output:
+                      with zf.open(item) as source, target.open('wb') as output:
                           shutil.copyfileobj(source, output)
 
-          # A valid project root must have both a settings file and app Gradle file.
-          candidates = []
-          for settings in destination.rglob("settings.gradle*"):
-              if settings.name not in ("settings.gradle", "settings.gradle.kts"):
+          roots = []
+          for settings in destination.rglob('*'):
+              if settings.name not in ('settings.gradle', 'settings.gradle.kts') or not settings.is_file():
                   continue
               root = settings.parent
-              app_gradle = root / "app" / "build.gradle.kts"
-              app_gradle_groovy = root / "app" / "build.gradle"
-              if app_gradle.is_file() or app_gradle_groovy.is_file():
-                  candidates.append(root)
+              if ((root / 'app' / 'build.gradle').is_file()
+                  or (root / 'app' / 'build.gradle.kts').is_file()):
+                  roots.append(root)
 
-          # Prefer the shallowest matching project root.
-          candidates = sorted(set(candidates), key=lambda p: (len(p.relative_to(destination).parts), str(p)))
-          if not candidates:
-              sys.exit(
-                  "ERROR: The ZIP was extracted, but no Android Gradle project was found. "
-                  "The archive must contain settings.gradle(.kts) and app/build.gradle(.kts)."
-              )
+          if not roots:
+              sys.exit('ERROR: ZIP extracted, but no Android project was found. The ZIP must contain settings.gradle(.kts) and app/build.gradle(.kts).')
 
-          project_root = candidates[0]
-          relative_root = project_root.relative_to(workspace)
-          output_file = Path(os.environ["GITHUB_OUTPUT"])
-          with output_file.open("a", encoding="utf-8") as handle:
-              handle.write(f"dir={relative_root.as_posix()}\n")
-              handle.write(f"archive={archive.name}\n")
+          roots = sorted(set(roots), key=lambda p: (len(p.relative_to(destination).parts), str(p)))
+          project_root = roots[0]
+          relative_root = project_root.relative_to(workspace).as_posix()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'dir={relative_root}\n')
+              output.write(f'archive={archive.name}\n')
 
-          print(f"Gradle project root: {project_root}")
-          print(f"Settings file: {next(p for p in project_root.iterdir() if p.name in ('settings.gradle', 'settings.gradle.kts'))}")
-          print(f"App Gradle file present: {(project_root / 'app').is_dir()}")
+          print(f'Android Gradle root: {project_root}')
+          print(f'Settings file: {next(p for p in project_root.iterdir() if p.name in ("settings.gradle", "settings.gradle.kts"))}')
+          print(f'App module: {project_root / "app"}')
           PY
 
       - name: Set up JDK 17
@@ -126,17 +109,59 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # v4.0.4 uses the modern command-line tools and no longer asks Google
+      # for the removed legacy SDK package named "tools".
+      - name: Set up Android SDK and accept licenses
+        uses: android-actions/setup-android@v4.0.4
+        with:
+          cmdline-tools-version: '15859902'
+          packages: ''
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
 
-      - name: Install Android SDK packages
+      - name: Install required Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [[ -z "$SDK_ROOT" || ! -d "$SDK_ROOT" ]]; then
+            echo 'ERROR: ANDROID_SDK_ROOT/ANDROID_HOME is not set to an existing SDK directory.' >&2
+            exit 1
+          fi
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+          export ANDROID_HOME="$SDK_ROOT"
+
+          # setup-android adds the current cmdline-tools/<version>/bin to PATH.
+          # Resolve sdkmanager dynamically instead of hard-coding the old
+          # cmdline-tools/16.0 directory name.
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            for candidate in "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager; do
+              if [[ -x "$candidate" ]]; then
+                SDKMANAGER="$candidate"
+              fi
+            done
+          fi
+          if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
+            echo "ERROR: sdkmanager was not found under $SDK_ROOT/cmdline-tools/*/bin/." >&2
+            exit 1
+          fi
+
+          echo "Android SDK: $SDK_ROOT"
+          echo "sdkmanager: $SDKMANAGER"
+          "$SDKMANAGER" --version
+
+          # Licenses are accepted by android-actions/setup-android above.
+          if [[ ! -d "$SDK_ROOT/licenses" ]]; then
+            echo 'ERROR: Android SDK licenses directory is missing after setup.' >&2
+            exit 1
+          fi
+
+          "$SDKMANAGER" "--sdk_root=$SDK_ROOT" --install \
+            'platform-tools' \
+            'platforms;android-35' \
+            'build-tools;35.0.0'
 
       - name: Set up Gradle 8.7 and cache
         uses: gradle/actions/setup-gradle@v6
@@ -144,16 +169,12 @@ jobs:
           gradle-version: '8.7'
           validate-wrappers: false
 
-      # The uploaded ZIP may omit gradle-wrapper.jar. Generate a complete wrapper
-      # using the installed Gradle distribution before calling ./gradlew.
-      - name: Generate Gradle Wrapper
+      - name: Generate a complete Gradle Wrapper
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace wrapper \
-            --gradle-version 8.7 \
-            --distribution-type bin
+          gradle --no-daemon --stacktrace wrapper --gradle-version 8.7 --distribution-type bin
           chmod +x ./gradlew
           test -f gradle/wrapper/gradle-wrapper.jar
           ./gradlew --no-daemon --version
@@ -175,9 +196,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apk="app/build/outputs/apk/debug/app-debug.apk"
+          apk='app/build/outputs/apk/debug/app-debug.apk'
           test -f "$apk"
-          cp "$apk" "app/build/outputs/apk/debug/DHYRA-Browser-v2.0-Pro.apk"
+          cp "$apk" 'app/build/outputs/apk/debug/DHYRA-Browser-v2.0-Pro.apk'
 
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
