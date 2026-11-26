@@ -223,13 +223,13 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/dist"
           APK='app/build/outputs/apk/debug/app-debug.apk'
           test -s "$APK"
-          cp "$APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.0.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.1.apk"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.build_release }}" == "true" ]]; then
             RELEASE_APK='app/build/outputs/apk/release/app-release-unsigned.apk'
             test -s "$RELEASE_APK"
-            cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.0-release-unsigned.apk"
+            cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.1-release-unsigned.apk"
           fi
-          python3 - "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.0.apk" <<'PY'
+          python3 - "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.1.apk" <<'PY'
           import sys
           from pathlib import Path
           from zipfile import ZipFile
