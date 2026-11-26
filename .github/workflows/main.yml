@@ -178,15 +178,39 @@ jobs:
           cache-provider: basic
           validate-wrappers: false
 
-      - name: Generate and verify standard Gradle Wrapper
+      - name: Generate and verify the standard Gradle Wrapper
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace wrapper --gradle-version 9.5.1 --distribution-type bin
+
+          # The source archive intentionally omits gradle-wrapper.jar. Generate it
+          # with the trusted Gradle 9.5.1 distribution installed by setup-gradle.
+          EXPECTED_GRADLE_SHA256='bafc141b619ad6350fd975fc903156dd5c151998cc8b058e8c1044ab5f7b031f'
+          EXPECTED_WRAPPER_JAR_SHA256='497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7'
+
+          gradle --no-daemon --stacktrace wrapper \
+            --gradle-version 9.5.1 \
+            --distribution-type bin \
+            --gradle-distribution-sha256-sum "$EXPECTED_GRADLE_SHA256"
+
           chmod +x ./gradlew
           test -s gradle/wrapper/gradle-wrapper.jar
           test -s gradle/wrapper/gradle-wrapper.properties
+
+          ACTUAL_WRAPPER_JAR_SHA256="$(sha256sum gradle/wrapper/gradle-wrapper.jar | awk '{print $1}')"
+          if [[ "$ACTUAL_WRAPPER_JAR_SHA256" != "$EXPECTED_WRAPPER_JAR_SHA256" ]]; then
+            echo "ERROR: Gradle Wrapper JAR checksum mismatch." >&2
+            echo "Expected: $EXPECTED_WRAPPER_JAR_SHA256" >&2
+            echo "Actual:   $ACTUAL_WRAPPER_JAR_SHA256" >&2
+            exit 1
+          fi
+
+          grep -Fq 'distributionUrl=https\://services.gradle.org/distributions/gradle-9.5.1-bin.zip' gradle/wrapper/gradle-wrapper.properties
+          grep -Fq "distributionSha256Sum=$EXPECTED_GRADLE_SHA256" gradle/wrapper/gradle-wrapper.properties
+
+          # This first Wrapper invocation also verifies the downloaded Gradle ZIP
+          # against distributionSha256Sum before using it.
           ./gradlew --no-daemon --version
 
       - name: Verify Android AAR metadata compatibility
@@ -223,13 +247,13 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/dist"
           APK='app/build/outputs/apk/debug/app-debug.apk'
           test -s "$APK"
-          cp "$APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.2.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.3.0.apk"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.build_release }}" == "true" ]]; then
             RELEASE_APK='app/build/outputs/apk/release/app-release-unsigned.apk'
             test -s "$RELEASE_APK"
-            cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.2-release-unsigned.apk"
+            cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.3.0-release-unsigned.apk"
           fi
-          python3 - "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.2.2.apk" <<'PY'
+          python3 - "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.3.0.apk" <<'PY'
           import sys
           from pathlib import Path
           from zipfile import ZipFile
