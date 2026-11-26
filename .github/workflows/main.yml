@@ -1,0 +1,318 @@
+name: DHYRA Android CI (source root or ZIP)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_release:
+        description: Also build an unsigned release APK
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dhyra-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Locate source, test, build and package DHYRA
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Locate Android project (root source or one ZIP)
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import shutil
+          import stat
+          import sys
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          destination = workspace / ".ci-dhyra-unpacked"
+
+          def is_android_root(path: Path) -> bool:
+              settings = (path / "settings.gradle.kts").is_file() or (path / "settings.gradle").is_file()
+              app_build = (path / "app" / "build.gradle.kts").is_file() or (path / "app" / "build.gradle").is_file()
+              manifest = (path / "app" / "src" / "main" / "AndroidManifest.xml").is_file()
+              return settings and app_build and manifest
+
+          if is_android_root(workspace):
+              project_root = workspace
+              source_mode = "repository root"
+              source_archive = ""
+          else:
+              archives = sorted(p for p in workspace.iterdir() if p.is_file() and p.suffix.lower() == ".zip")
+              if not archives:
+                  sys.exit(
+                      "ERROR: No Android project exists at repository root and no .zip was found. "
+                      "For ZIP-only setup, commit exactly one DHYRA project ZIP (for example DHYRA-FINAL.zip) "
+                      "to the repository root. The workflow will extract it automatically."
+                  )
+              if len(archives) != 1:
+                  sys.exit("ERROR: Expected exactly one project ZIP in repository root; found: " + ", ".join(p.name for p in archives))
+
+              archive = archives[0]
+              if destination.exists():
+                  shutil.rmtree(destination)
+              destination.mkdir(parents=True)
+
+              with zipfile.ZipFile(archive) as zf:
+                  bad_member = zf.testzip()
+                  if bad_member:
+                      sys.exit(f"ERROR: ZIP integrity check failed at entry: {bad_member}")
+                  entries = zf.infolist()
+                  total_uncompressed = sum(item.file_size for item in entries)
+                  if total_uncompressed > 600 * 1024 * 1024:
+                      sys.exit("ERROR: ZIP expands beyond the 600 MiB CI safety limit.")
+                  for item in entries:
+                      name = item.filename
+                      member = PurePosixPath(name)
+                      if not name or member.is_absolute() or ".." in member.parts or "\\" in name:
+                          sys.exit(f"ERROR: Unsafe ZIP entry: {name!r}")
+                      if member.parts and member.parts[0].endswith(":"):
+                          sys.exit(f"ERROR: Windows absolute ZIP entry is not allowed: {name!r}")
+                      mode = (item.external_attr >> 16) & 0xFFFF
+                      if stat.S_ISLNK(mode):
+                          sys.exit(f"ERROR: Symlink entry is not allowed in project ZIP: {name!r}")
+                      target = destination.joinpath(*member.parts).resolve()
+                      if not target.is_relative_to(destination):
+                          sys.exit(f"ERROR: ZIP entry escapes extraction directory: {name!r}")
+                      if item.is_dir():
+                          target.mkdir(parents=True, exist_ok=True)
+                      else:
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          with zf.open(item, "r") as src, target.open("wb") as dst:
+                              shutil.copyfileobj(src, dst)
+
+              candidates = []
+              for path in destination.rglob("settings.gradle*"):
+                  if path.name in ("settings.gradle", "settings.gradle.kts") and is_android_root(path.parent):
+                      candidates.append(path.parent)
+              if not candidates:
+                  sys.exit(
+                      "ERROR: ZIP extracted, but no Android Gradle project was found. "
+                      "The archive must contain settings.gradle(.kts), app/build.gradle(.kts), "
+                      "and app/src/main/AndroidManifest.xml."
+                  )
+              project_root = sorted(set(candidates), key=lambda p: (len(p.relative_to(destination).parts), str(p)))[0]
+              source_mode = "repository ZIP"
+              source_archive = archive.name
+
+          relative = project_root.relative_to(workspace).as_posix()
+          relative = "." if relative == "." else relative
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"dir={relative}\n")
+              output.write(f"mode={source_mode}\n")
+              output.write(f"archive={source_archive}\n")
+          print(f"Source mode: {source_mode}")
+          if source_archive:
+              print(f"Input archive: {source_archive}")
+          print(f"Android project root: {project_root}")
+          print(f"Settings: {next(p for p in project_root.iterdir() if p.name in ('settings.gradle', 'settings.gradle.kts'))}")
+          print(f"App module: {project_root / 'app'}")
+          PY
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK and accept licenses
+        uses: android-actions/setup-android@v4.0.4
+        with:
+          # setup-android v4.0.4 supplies its supported modern command-line tools.
+          # Do not pin an obsolete numeric build ID or request the removed legacy "tools" package.
+          packages: 'platform-tools'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install Android SDK required by DHYRA
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install 'platforms;android-37.1' 'build-tools;36.0.0'
+          test -d "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/platforms/android-37.1"
+
+      - name: Set up Gradle 9.5.1 and cache
+        uses: gradle/actions/setup-gradle@v6.4.1
+        with:
+          gradle-version: '9.5.1'
+          validate-wrappers: false
+
+      - name: Generate and verify standard Gradle Wrapper
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace wrapper --gradle-version 9.5.1 --distribution-type bin
+          chmod +x ./gradlew
+          test -s gradle/wrapper/gradle-wrapper.jar
+          test -s gradle/wrapper/gradle-wrapper.properties
+          ./gradlew --no-daemon --version
+
+      - name: Verify Android AAR metadata compatibility
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :app:checkDebugAarMetadata
+
+      - name: Run JVM unit tests
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Run Android lint
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace lintDebug
+
+      - name: Build debug APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Build optional unsigned release APK
+        if: github.event_name == 'workflow_dispatch' && inputs.build_release == true
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Validate and stage APK outputs
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          APK='app/build/outputs/apk/debug/app-debug.apk'
+          test -s "$APK"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0.2.apk"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.build_release }}" == "true" ]]; then
+            RELEASE_APK='app/build/outputs/apk/release/app-release-unsigned.apk'
+            test -s "$RELEASE_APK"
+            cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0.2-release-unsigned.apk"
+          fi
+          python3 - "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0.2.apk" <<'PY'
+          import sys
+          from pathlib import Path
+          from zipfile import ZipFile
+          apk = Path(sys.argv[1])
+          if apk.stat().st_size < 100_000:
+              raise SystemExit(f"APK is unexpectedly small: {apk.stat().st_size} bytes")
+          with ZipFile(apk) as archive:
+              names = set(archive.namelist())
+              if "AndroidManifest.xml" not in names:
+                  raise SystemExit("APK has no AndroidManifest.xml")
+              if not any(name == "classes.dex" or (name.startswith("classes") and name.endswith(".dex")) for name in names):
+                  raise SystemExit("APK has no DEX bytecode")
+              corrupt = archive.testzip()
+              if corrupt:
+                  raise SystemExit(f"Corrupt APK entry: {corrupt}")
+          print(f"APK verified: {apk} ({apk.stat().st_size} bytes)")
+          PY
+
+      - name: Create and validate clean source ZIP
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.dir }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          project = (workspace / os.environ["PROJECT_DIR"]).resolve()
+          output_dir = workspace / "dist"
+          output_dir.mkdir(parents=True, exist_ok=True)
+          archive_path = output_dir / "DHYRA-FINAL.zip"
+          excluded_dirs = {
+              ".git", ".gradle", ".idea", ".kotlin", ".cxx", ".externalNativeBuild",
+              "build", "dist", "captures", "tmp", "node_modules", ".ci-dhyra-unpacked"
+          }
+          excluded_names = {
+              "local.properties", ".DS_Store", "Thumbs.db", "keystore.properties",
+              "signing.properties", "credentials.properties", "DHYRA-FINAL.zip"
+          }
+          excluded_suffixes = {
+              ".jks", ".keystore", ".apk", ".aab", ".log", ".pem", ".p12", ".zip",
+              ".pfx", ".key", ".p8"
+          }
+          with ZipFile(archive_path, "w", ZIP_DEFLATED, compresslevel=9) as archive:
+              for path in sorted(project.rglob("*")):
+                  if not path.is_file() or path.is_symlink():
+                      continue
+                  relative = path.relative_to(project)
+                  if any(part in excluded_dirs for part in relative.parts):
+                      continue
+                  if path.name in excluded_names or path.suffix.lower() in excluded_suffixes:
+                      continue
+                  if path.name.startswith(".env") or "secret" in path.name.lower():
+                      continue
+                  archive.write(path, relative.as_posix())
+
+          with ZipFile(archive_path) as archive:
+              names = set(archive.namelist())
+              required = {
+                  "settings.gradle.kts", "build.gradle.kts", "app/build.gradle.kts",
+                  "app/src/main/AndroidManifest.xml", "gradle/wrapper/gradle-wrapper.jar",
+                  "gradle/wrapper/gradle-wrapper.properties", "gradlew", "gradlew.bat"
+              }
+              missing = required - names
+              has_workflow = any(name in names for name in (
+                  ".github/workflows/build.yml", ".github/workflows/main.yml"
+              ))
+              if missing:
+                  raise SystemExit("Source ZIP missing required files: " + ", ".join(sorted(missing)))
+              if not has_workflow:
+                  raise SystemExit("Source ZIP is missing .github/workflows/build.yml or main.yml")
+              corrupt = archive.testzip()
+              if corrupt:
+                  raise SystemExit(f"Corrupt source ZIP entry: {corrupt}")
+          print(f"Source archive verified: {archive_path} ({archive_path.stat().st_size} bytes)")
+          print(f"Archived project root: {project}")
+          PY
+
+      - name: Create and verify SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/dist"
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+          test -s SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Upload verified APK, source ZIP and checksums
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: DHYRA-FINAL-${{ github.run_number }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Gradle diagnostics if build fails
+        if: failure() && steps.project.outputs.dir != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: DHYRA-build-diagnostics-${{ github.run_number }}
+          path: |
+            ${{ steps.project.outputs.dir }}/app/build/reports/
+            ${{ steps.project.outputs.dir }}/app/build/outputs/logs/
+          if-no-files-found: ignore
+          retention-days: 7
