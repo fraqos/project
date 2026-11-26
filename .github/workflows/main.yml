@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 75
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7.0.0
 
       - name: Locate Android project (root source or one ZIP)
         id: project
@@ -131,12 +131,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Set up Android SDK and accept licenses
         uses: android-actions/setup-android@v4.0.4
         with:
-          cmdline-tools-version: '15859902'
+          # setup-android v4.0.4 supplies its supported modern command-line tools.
+          # Do not pin an obsolete numeric build ID or request the removed legacy "tools" package.
           packages: 'platform-tools'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
@@ -145,7 +145,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Set up Gradle 8.13 and cache
         uses: gradle/actions/setup-gradle@v6.4.1
@@ -193,13 +193,13 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/dist"
           APK='app/build/outputs/apk/debug/app-debug.apk'
           test -s "$APK"
-          cp "$APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0-Pro.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0.2.apk"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.build_release }}" == "true" ]]; then
             RELEASE_APK='app/build/outputs/apk/release/app-release-unsigned.apk'
             test -s "$RELEASE_APK"
-            cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0-Pro-release-unsigned.apk"
+            cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0.2-release-unsigned.apk"
           fi
-          python3 - "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0-Pro.apk" <<'PY'
+          python3 - "$GITHUB_WORKSPACE/dist/DHYRA-Browser-v2.0.2.apk" <<'PY'
           import sys
           from pathlib import Path
           from zipfile import ZipFile
@@ -243,7 +243,7 @@ jobs:
               "signing.properties", "credentials.properties", "DHYRA-FINAL.zip"
           }
           excluded_suffixes = {
-              ".jks", ".keystore", ".apk", ".aab", ".log", ".pem", ".p12",
+              ".jks", ".keystore", ".apk", ".aab", ".log", ".pem", ".p12", ".zip",
               ".pfx", ".key", ".p8"
           }
           with ZipFile(archive_path, "w", ZIP_DEFLATED, compresslevel=9) as archive:
