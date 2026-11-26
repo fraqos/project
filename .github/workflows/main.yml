@@ -126,11 +126,11 @@ jobs:
           print(f"App module: {project_root / 'app'}")
           PY
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v6.2.0
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Set up Android SDK and accept licenses
         uses: android-actions/setup-android@v4.0.4
@@ -145,12 +145,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0'
+          sdkmanager --install 'platforms;android-37.1' 'build-tools;36.0.0'
+          test -d "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/platforms/android-37.1"
 
-      - name: Set up Gradle 8.13 and cache
+      - name: Set up Gradle 9.5.1 and cache
         uses: gradle/actions/setup-gradle@v6.4.1
         with:
-          gradle-version: '8.13'
+          gradle-version: '9.5.1'
           validate-wrappers: false
 
       - name: Generate and verify standard Gradle Wrapper
@@ -158,11 +159,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace wrapper --gradle-version 8.13 --distribution-type bin
+          gradle --no-daemon --stacktrace wrapper --gradle-version 9.5.1 --distribution-type bin
           chmod +x ./gradlew
           test -s gradle/wrapper/gradle-wrapper.jar
           test -s gradle/wrapper/gradle-wrapper.properties
           ./gradlew --no-daemon --version
+
+      - name: Verify Android AAR metadata compatibility
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :app:checkDebugAarMetadata
 
       - name: Run JVM unit tests
         working-directory: ${{ steps.project.outputs.dir }}
