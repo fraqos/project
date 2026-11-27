@@ -244,6 +244,11 @@ jobs:
         shell: bash
         run: python3 scripts/check-compose-contracts.py
 
+      - name: Validate project and CI toolchain consistency
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: python3 scripts/validate-ci-config.py
+
       - name: Set up JDK 21
         uses: actions/setup-java@v6.3.0
         with:
@@ -429,22 +434,30 @@ jobs:
           SIGN_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_release }}
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/dist"
+          # Always start with a clean artifact staging directory. This prevents
+          # a tracked/pre-existing dist/ folder from contributing stale APKs.
+          DIST_DIR="$GITHUB_WORKSPACE/dist"
+          case "$DIST_DIR" in
+            "$GITHUB_WORKSPACE/dist") ;;
+            *) echo 'ERROR: Refusing to clean an unexpected artifact directory.' >&2; exit 1 ;;
+          esac
+          rm -rf -- "$DIST_DIR"
+          mkdir -p "$DIST_DIR"
           APK='app/build/outputs/apk/debug/app-debug.apk'
           test -s "$APK"
-          cp "$APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.4.7.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.1.apk"
           if [[ "$BUILD_RELEASE" == "true" ]]; then
             if [[ "$SIGN_RELEASE" == "true" ]]; then
               RELEASE_APK='app/build/outputs/apk/release/app-release.apk'
               RELEASE_AAB='app/build/outputs/bundle/release/app-release.aab'
               test -s "$RELEASE_APK"
               test -s "$RELEASE_AAB"
-              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.4.7-release.apk"
-              cp "$RELEASE_AAB" "$GITHUB_WORKSPACE/dist/dhyra-v2.4.7-release.aab"
+              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.1-release.apk"
+              cp "$RELEASE_AAB" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.1-release.aab"
             else
               RELEASE_APK='app/build/outputs/apk/release/app-release-unsigned.apk'
               test -s "$RELEASE_APK"
-              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.4.7-release-unsigned.apk"
+              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.1-release-unsigned.apk"
             fi
           fi
           python3 - "$GITHUB_WORKSPACE/dist" <<'PY'
@@ -473,8 +486,8 @@ jobs:
             SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
             APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
             test -x "$APKSIGNER"
-            "$APKSIGNER" verify --verbose --print-certs "$GITHUB_WORKSPACE/dist/dhyra-v2.4.7-release.apk"
-            jarsigner -verify -certs "$GITHUB_WORKSPACE/dist/dhyra-v2.4.7-release.aab"
+            "$APKSIGNER" verify --verbose --print-certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.1-release.apk"
+            jarsigner -verify -certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.1-release.aab"
           fi
 
       - name: Create and validate clean source ZIP
@@ -557,7 +570,7 @@ jobs:
       - name: Upload verified APK, source ZIP and checksums
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: dhyra-v2.4.7-build-${{ github.run_number }}
+          name: dhyra-v2.5.1-build-${{ github.run_number }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30
