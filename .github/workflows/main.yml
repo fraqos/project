@@ -381,6 +381,11 @@ jobs:
         shell: bash
         run: ./gradlew --no-daemon --stacktrace :app:compileDebugKotlin
 
+      - name: Compile Kotlin unit tests
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :app:compileDebugUnitTestKotlin
+
       - name: Run JVM unit tests
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -445,19 +450,19 @@ jobs:
           mkdir -p "$DIST_DIR"
           APK='app/build/outputs/apk/debug/app-debug.apk'
           test -s "$APK"
-          cp "$APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.2.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.3.apk"
           if [[ "$BUILD_RELEASE" == "true" ]]; then
             if [[ "$SIGN_RELEASE" == "true" ]]; then
               RELEASE_APK='app/build/outputs/apk/release/app-release.apk'
               RELEASE_AAB='app/build/outputs/bundle/release/app-release.aab'
               test -s "$RELEASE_APK"
               test -s "$RELEASE_AAB"
-              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.2-release.apk"
-              cp "$RELEASE_AAB" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.2-release.aab"
+              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.3-release.apk"
+              cp "$RELEASE_AAB" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.3-release.aab"
             else
               RELEASE_APK='app/build/outputs/apk/release/app-release-unsigned.apk'
               test -s "$RELEASE_APK"
-              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.2-release-unsigned.apk"
+              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.3-release-unsigned.apk"
             fi
           fi
           python3 - "$GITHUB_WORKSPACE/dist" <<'PY'
@@ -486,8 +491,8 @@ jobs:
             SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
             APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
             test -x "$APKSIGNER"
-            "$APKSIGNER" verify --verbose --print-certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.2-release.apk"
-            jarsigner -verify -certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.2-release.aab"
+            "$APKSIGNER" verify --verbose --print-certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.3-release.apk"
+            jarsigner -verify -certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.3-release.aab"
           fi
 
       - name: Create and validate clean source ZIP
@@ -570,7 +575,7 @@ jobs:
       - name: Upload verified APK, source ZIP and checksums
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: dhyra-v2.5.2-build-${{ github.run_number }}
+          name: dhyra-v2.5.3-build-${{ github.run_number }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30
