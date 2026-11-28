@@ -1,21 +1,20 @@
 name: dhyra Android CI (ZIP auto-build)
 
 on:
-  # Jalankan otomatis hanya saat ZIP sumber DHYRA atau workflow ini berubah.
-  # Workflow tidak berjalan untuk edit README, dokumentasi, atau file lain.
+  # Build otomatis saat ZIP sumber atau file proyek di root repository berubah.
+  # Commit workflow saja tidak memicu build sebelum ZIP tersedia; gunakan Run workflow untuk pengujian manual.
   push:
     paths:
       - '*.zip'
       - '**/*.zip'
       - 'app/**'
+      - 'benchmark/**'
       - 'gradle/**'
       - 'build.gradle*'
       - 'settings.gradle*'
       - 'gradle.properties'
       - 'scripts/**'
       - 'gradlew'
-      - '.github/workflows/build.yml'
-      - '.github/workflows/main.yml'
   # Hindari build ganda pada push + pull_request. PR tidak memicu workflow ini.
   # Build manual tetap tersedia dari tab Actions.
   workflow_dispatch:
@@ -30,6 +29,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_macrobenchmark:
+        description: Run Macrobenchmark on a self-hosted physical Android 14+ device (requires android-physical runner)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -41,8 +45,9 @@ concurrency:
 jobs:
   build:
     name: Locate source, test, build and package dhyra
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Pin the hosted image to an LTS runner so SDK/tool defaults do not drift with ubuntu-latest.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -389,17 +394,22 @@ jobs:
       - name: Run JVM unit tests
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
-        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest
+
+      - name: Compile Macrobenchmark instrumentation APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :benchmark:assembleBenchmark
 
       - name: Run Android lint
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
-        run: ./gradlew --no-daemon --stacktrace lintDebug
+        run: ./gradlew --no-daemon --stacktrace :app:lintDebug
 
       - name: Build debug APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
 
       - name: Build unsigned release APK
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_release && !inputs.sign_release }}
@@ -408,7 +418,7 @@ jobs:
         run: |
           set -euo pipefail
           # No signing secrets are exposed to an unsigned release build.
-          ./gradlew --no-daemon --stacktrace assembleRelease
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease
 
       - name: Build signed release APK and App Bundle
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_release && inputs.sign_release }}
@@ -429,7 +439,7 @@ jobs:
           printf '%s' "$DHYRA_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$DHYRA_RELEASE_STORE_FILE"
           chmod 600 "$DHYRA_RELEASE_STORE_FILE"
           test -s "$DHYRA_RELEASE_STORE_FILE"
-          ./gradlew --no-daemon --stacktrace assembleRelease bundleRelease
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease :app:bundleRelease
 
       - name: Validate and stage APK outputs
         working-directory: ${{ steps.project.outputs.dir }}
@@ -450,19 +460,19 @@ jobs:
           mkdir -p "$DIST_DIR"
           APK='app/build/outputs/apk/debug/app-debug.apk'
           test -s "$APK"
-          cp "$APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.4.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.6.0.apk"
           if [[ "$BUILD_RELEASE" == "true" ]]; then
             if [[ "$SIGN_RELEASE" == "true" ]]; then
               RELEASE_APK='app/build/outputs/apk/release/app-release.apk'
               RELEASE_AAB='app/build/outputs/bundle/release/app-release.aab'
               test -s "$RELEASE_APK"
               test -s "$RELEASE_AAB"
-              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.4-release.apk"
-              cp "$RELEASE_AAB" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.4-release.aab"
+              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.6.0-release.apk"
+              cp "$RELEASE_AAB" "$GITHUB_WORKSPACE/dist/dhyra-v2.6.0-release.aab"
             else
               RELEASE_APK='app/build/outputs/apk/release/app-release-unsigned.apk'
               test -s "$RELEASE_APK"
-              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.5.4-release-unsigned.apk"
+              cp "$RELEASE_APK" "$GITHUB_WORKSPACE/dist/dhyra-v2.6.0-release-unsigned.apk"
             fi
           fi
           python3 - "$GITHUB_WORKSPACE/dist" <<'PY'
@@ -491,8 +501,8 @@ jobs:
             SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
             APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
             test -x "$APKSIGNER"
-            "$APKSIGNER" verify --verbose --print-certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.4-release.apk"
-            jarsigner -verify -certs "$GITHUB_WORKSPACE/dist/dhyra-v2.5.4-release.aab"
+            "$APKSIGNER" verify --verbose --print-certs "$GITHUB_WORKSPACE/dist/dhyra-v2.6.0-release.apk"
+            jarsigner -verify -certs "$GITHUB_WORKSPACE/dist/dhyra-v2.6.0-release.aab"
           fi
 
       - name: Create and validate clean source ZIP
@@ -575,7 +585,7 @@ jobs:
       - name: Upload verified APK, source ZIP and checksums
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: dhyra-v2.5.4-build-${{ github.run_number }}
+          name: dhyra-v2.6.0-build-${{ github.run_number }}-${{ github.run_attempt }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30
@@ -584,9 +594,133 @@ jobs:
         if: failure() && steps.project.outputs.dir != ''
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: dhyra-build-diagnostics-${{ github.run_number }}
+          name: dhyra-build-diagnostics-${{ github.run_number }}-${{ github.run_attempt }}
           path: |
             ${{ steps.project.outputs.dir }}/app/build/reports/
             ${{ steps.project.outputs.dir }}/app/build/outputs/logs/
           if-no-files-found: ignore
           retention-days: 7
+
+
+  macrobenchmark:
+    name: Macrobenchmark on a connected physical Android device
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_macrobenchmark }}
+    needs: build
+    # Requires runner >= 2.327.1 (Node 24 actions) and one unlocked physical Android 14+ device.
+    runs-on: [self-hosted, linux, android-physical]
+    timeout-minutes: 60
+    steps:
+      - name: Download the exact source archive produced by the build job
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: dhyra-v2.6.0-build-${{ github.run_number }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dhyra-build-artifact
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.4
+        with:
+          packages: 'platform-tools'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install project Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install 'platforms;android-37.1' 'build-tools;36.0.0'
+
+      - name: Verify a physical Android 14+ device is connected
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb start-server
+          adb devices -l
+          DEVICE_COUNT="$(adb devices | awk 'NR>1 && $2=="device" {count++} END {print count+0}')"
+          if [[ "$DEVICE_COUNT" != "1" ]]; then
+            echo "ERROR: Exactly one authorized physical Android device must be connected; found $DEVICE_COUNT." >&2
+            exit 1
+          fi
+          SDK_LEVEL="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+          IS_EMULATOR="$(adb shell getprop ro.kernel.qemu | tr -d '\r')"
+          if [[ "$SDK_LEVEL" -lt 34 || "$IS_EMULATOR" == "1" ]]; then
+            echo "ERROR: Macrobenchmark requires a physical Android 14+ device (API 34+). SDK=$SDK_LEVEL emulator=$IS_EMULATOR" >&2
+            exit 1
+          fi
+          echo "Connected physical Android API $SDK_LEVEL device."
+
+      - name: Extract verified source ZIP in runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "${{ runner.temp }}/dhyra-build-artifact/dhyra-source.zip" "${{ runner.temp }}/dhyra-project" <<'PY'
+          import shutil, stat, sys, zipfile
+          from pathlib import Path, PurePosixPath
+          archive_path, target = Path(sys.argv[1]), Path(sys.argv[2])
+          if not archive_path.is_file():
+              raise SystemExit('dhyra-source.zip is missing from build artifact')
+          target.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive_path) as archive:
+              entries = archive.infolist()
+              if sum(e.file_size for e in entries) > 600 * 1024 * 1024:
+                  raise SystemExit('source archive exceeds 600 MiB expanded limit')
+              seen = set()
+              for entry in entries:
+                  name = entry.filename
+                  path = PurePosixPath(name)
+                  if not name or path.is_absolute() or '..' in path.parts or '\\' in name or name in seen:
+                      raise SystemExit(f'unsafe or duplicate ZIP member: {name!r}')
+                  seen.add(name)
+                  mode = (entry.external_attr >> 16) & 0xffff
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit(f'symlink not allowed: {name!r}')
+                  output = (target / Path(*path.parts)).resolve()
+                  if not output.is_relative_to(target.resolve()):
+                      raise SystemExit(f'ZIP path escapes destination: {name!r}')
+              corrupt = archive.testzip()
+              if corrupt:
+                  raise SystemExit(f'ZIP integrity failure at {corrupt}')
+              for entry in entries:
+                  path = PurePosixPath(entry.filename)
+                  output = target / Path(*path.parts)
+                  if entry.is_dir():
+                      output.mkdir(parents=True, exist_ok=True)
+                  else:
+                      output.parent.mkdir(parents=True, exist_ok=True)
+                      with archive.open(entry) as src, output.open('wb') as dst:
+                          shutil.copyfileobj(src, dst)
+          for required in ('settings.gradle.kts', 'app/build.gradle.kts', 'benchmark/build.gradle.kts', 'gradlew'):
+              if not (target / required).is_file():
+                  raise SystemExit(f'required file missing: {required}')
+          print(f'Extracted benchmark project into {target}')
+          PY
+          chmod 0755 "${{ runner.temp }}/dhyra-project/gradlew"
+
+      - name: Set up Gradle 9.5.1
+        uses: gradle/actions/setup-gradle@v6.4.1
+        with:
+          gradle-version: '9.5.1'
+          cache-provider: basic
+          validate-wrappers: true
+
+      - name: Run benchmark variant on the connected device
+        working-directory: ${{ runner.temp }}/dhyra-project
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :benchmark:connectedBenchmarkAndroidTest
+
+      - name: Upload physical-device benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dhyra-v2.6.0-physical-macrobenchmark-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dhyra-project/benchmark/build/reports/
+            ${{ runner.temp }}/dhyra-project/benchmark/build/outputs/connected_android_test_additional_output/
+            ${{ runner.temp }}/dhyra-project/benchmark/build/outputs/androidTest-results/
+          if-no-files-found: warn
+          retention-days: 30
